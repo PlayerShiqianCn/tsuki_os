@@ -3,7 +3,6 @@
 CFLAGS = -m32 -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g
 LDFLAGS = -m elf_i386 -T link.ld --oformat binary
 
-# 【必须】加入 process.o
 OBJS = kernel_entry.o idt.o kernel.o ps2.o video.o window.o utils.o heap.o console.o disk.o fs.o timer.o syscall.o process.o
 
 all: os-image.img
