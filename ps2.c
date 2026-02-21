@@ -11,6 +11,7 @@ static volatile int kb_tail = 0;
 static volatile ps2_mouse_event_t mouse_buffer[16];
 static volatile int mouse_head = 0;
 static volatile int mouse_tail = 0;
+static unsigned char key_down[128];
 
 static inline unsigned char inb(unsigned short port) {
     unsigned char ret;
@@ -20,10 +21,6 @@ static inline unsigned char inb(unsigned short port) {
 
 static inline void outb(unsigned short port, unsigned char val) {
     __asm__ __volatile__ ("outb %0, %1" : : "a" (val), "Nd" (port));
-}
-
-static void wait_data(void) {
-    while ((inb(PS2_STATUS_PORT) & 1) == 0);
 }
 
 static const char scancode_ascii[128] = {
@@ -58,15 +55,17 @@ void ps2_init(void) {
     while (inb(PS2_STATUS_PORT) & 1) inb(PS2_DATA_PORT);
     kb_head = kb_tail = 0;
     mouse_head = mouse_tail = 0;
+    for (int i = 0; i < 128; i++) key_down[i] = 0;
 
-    // 【关键】开启 IRQ1 (键盘)
+    // 采用主循环轮询输入，保持 IRQ1 屏蔽，避免重复采集
     unsigned char mask = inb(0x21); // 主片 mask 寄存器
-    mask &= ~(1 << 1); // Clear bit 1 (IRQ1)
+    mask |= (1 << 1); // Set bit 1 (IRQ1 masked)
     outb(0x21, mask);
 }
 
 static int shift_pressed = 0;
 static int caps_lock = 0;
+static int release_prefix = 0;
 static unsigned char mouse_cycle = 0;
 static unsigned char mouse_packet[3];
 
@@ -112,10 +111,24 @@ void ps2_poll_inputs_once(void) {
     } else {
         unsigned char sc = data;
         if (sc == 0xE0 || sc == 0xE1) return;
-        int released = (sc & 0x80) != 0;
-        unsigned char sc_no_rel = sc & 0x7F;
+
+        // 兼容 Set-2 的 break 前缀 (F0)；否则按 Set-1 的 bit7 规则处理
+        if (sc == 0xF0) {
+            release_prefix = 1;
+            return;
+        }
+
+        int released = release_prefix || ((sc & 0x80) != 0);
+        unsigned char sc_no_rel = release_prefix ? sc : (sc & 0x7F);
+        release_prefix = 0;
+
+        if (sc_no_rel >= 128) return;
 
         if (!released) {
+            // 屏蔽重复 make（含轮询/中断并发或 typematic），保证单次按键只入队一次
+            if (key_down[sc_no_rel]) return;
+            key_down[sc_no_rel] = 1;
+
             if (sc_no_rel == 0x2A || sc_no_rel == 0x36) { shift_pressed = 1; return; }
             if (sc_no_rel == 0x3A) { caps_lock = !caps_lock; return; }
             const char *tbl = shift_pressed ? scancode_ascii_shift : scancode_ascii;
@@ -124,17 +137,21 @@ void ps2_poll_inputs_once(void) {
             else if (shift_pressed && caps_lock && c >= 'A' && c <= 'Z') c += 32;
             push_kb_char(c);
         } else {
+            key_down[sc_no_rel] = 0;
             if (sc_no_rel == 0x2A || sc_no_rel == 0x36) shift_pressed = 0;
         }
     }
 }
 
 char ps2_getchar(void) {
-    ps2_poll_inputs_once();
     if (kb_tail == kb_head) return 0;
     char c = kb_buffer[kb_tail];
     kb_tail = (kb_tail + 1) % 32;
     return c;
+}
+
+int ps2_has_key(void) {
+    return kb_tail != kb_head;
 }
 
 static void wait_input_empty(void) {
@@ -146,9 +163,9 @@ void ps2_mouse_init(void) {
     wait_input_empty(); outb(PS2_STATUS_PORT, 0xD4);
     wait_input_empty(); outb(PS2_DATA_PORT, 0xF4);
 
-    // 【关键】开启 IRQ12 (鼠标，从片 bit 4)
+    // 采用主循环轮询输入，保持 IRQ12 屏蔽，避免与轮询并发
     unsigned char mask = inb(0xA1); // 从片 mask 寄存器
-    mask &= ~(1 << 4); // Clear bit 4 (IRQ12)
+    mask |= (1 << 4); // Set bit 4 (IRQ12 masked)
     outb(0xA1, mask);
 }
 
@@ -162,20 +179,11 @@ int ps2_get_mouse_event(ps2_mouse_event_t *out) {
 // 键盘中断处理函数
 // 由汇编跳板调用，在中断上下文中执行
 void keyboard_handler_isr(void) {
-    // 读取数据以清除中断，但不处理（由轮询处理）
-    inb(PS2_DATA_PORT);
-
-    // 发送EOI给主PIC
-    outb(0x20, 0x20);
+    // 轮询模式下理论上不会进入；保留空处理以兼容现有 IDT
 }
 
 // 鼠标中断处理函数
 // IRQ12，由汇编跳板调用
 void mouse_handler_isr(void) {
-    // 读取数据以清除中断，但不处理（由轮询处理）
-    inb(PS2_DATA_PORT);
-
-    // 发送EOI给从PIC和主PIC
-    outb(0xA0, 0x20);
-    outb(0x20, 0x20);
+    // 轮询模式下理论上不会进入；保留空处理以兼容现有 IDT
 }

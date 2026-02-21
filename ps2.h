@@ -5,6 +5,7 @@
 void ps2_init(void);
 void ps2_poll_inputs_once(void);
 char ps2_getchar(void);
+int ps2_has_key(void);
 
 void ps2_mouse_init(void);
 

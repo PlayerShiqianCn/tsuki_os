@@ -46,6 +46,38 @@ void draw_rect(int x, int y, int w, int h, int color) {
     _syscall5(SYS_DRAW_RECT, x, y, w, h, color);
 }
 
+void draw_text(int x, int y, const char* str, int color) {
+    _syscall5(SYS_DRAW_TEXT, x, y, (int)str, color, 0);
+}
+
+int get_key(void) {
+    return _syscall3(SYS_GET_KEY, 0, 0, 0);
+}
+
 void set_sandbox(int level) {
     _syscall3(SYS_SET_SANDBOX, level, 0, 0);
+}
+
+int win_create(int x, int y, int w, int h, const char* title) {
+    return _syscall5(SYS_WIN_CREATE, x, y, w, h, (int)title);
+}
+
+int win_set_title(const char* title) {
+    return _syscall3(SYS_WIN_SET_TITLE, (int)title, 0, 0);
+}
+
+int win_is_focused(void) {
+    return _syscall3(SYS_WIN_IS_FOCUSED, 0, 0, 0);
+}
+
+int win_get_event(void) {
+    return _syscall3(SYS_WIN_GET_EVENT, 0, 0, 0);
+}
+
+int list_files(char* buffer, int max_len) {
+    return _syscall3(SYS_FS_LIST, (int)buffer, max_len, 0);
+}
+
+int launch_tsk(const char* filename) {
+    return _syscall3(SYS_LAUNCH_TSK, (int)filename, 0, 0);
 }

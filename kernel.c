@@ -14,6 +14,23 @@ __asm__(".code32");
 // --- 全局状态 ---
 int is_start_menu_open = 0;
 
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+    unsigned char color;
+    char* label;
+    char* filename;
+} StartTile;
+
+static const StartTile start_tiles[] = {
+    {12, 58, 90, 60, C_GREEN, "Terminal", "terminal.tsk"},
+    {114, 58, 90, 60, C_BLUE, "WinMgr", "wm.tsk"},
+    {216, 58, 90, 60, C_RED, "StartUI", "start.tsk"},
+    {12, 124, 90, 52, C_YELLOW, "Demo", "app.tsk"},
+};
+
 // 声明外部函数
 extern void init_timer(int freq);
 
@@ -28,7 +45,7 @@ void draw_taskbar() {
     // 2. 开始按钮 (Start Button)
     unsigned char start_btn_color = is_start_menu_open ? C_BLUE : C_DARK_GRAY;
     draw_rect(0, SCREEN_HEIGHT - 20, 50, 20, start_btn_color);
-    draw_string(5, SCREEN_HEIGHT - 15, "Start", C_WHITE);
+    draw_string(8, SCREEN_HEIGHT - 15, "TSK", C_WHITE);
 
     if (is_start_menu_open) return;
 
@@ -56,17 +73,15 @@ void draw_taskbar() {
 // --- 绘制 Win8 风格全屏开始屏幕 ---
 void draw_start_screen() {
     draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT - 20, C_MAGENTA);
-    draw_string(20, 20, "Start", C_WHITE);
+    draw_string(20, 20, "TSK Apps", C_WHITE);
 
-    // Terminal 磁贴
-    int tile_x = 40;
-    int tile_y = 60;
-    int tile_w = 80;
-    int tile_h = 60;
-    
-    draw_rect(tile_x, tile_y, tile_w, tile_h, C_GREEN);
-    draw_string(tile_x + 5, tile_y + 45, "Terminal", C_WHITE);
-    draw_string(tile_x + 25, tile_y + 20, ">_", C_WHITE);
+    int tile_count = sizeof(start_tiles) / sizeof(start_tiles[0]);
+    for (int i = 0; i < tile_count; i++) {
+        const StartTile* tile = &start_tiles[i];
+        draw_rect(tile->x, tile->y, tile->w, tile->h, tile->color);
+        draw_string(tile->x + 8, tile->y + 18, tile->label, C_WHITE);
+        draw_string(tile->x + 8, tile->y + 38, tile->filename, C_WHITE);
+    }
 }
 
 // --- 处理点击任务栏的逻辑 ---
@@ -100,15 +115,19 @@ int handle_taskbar_click(int mx, int my) {
 
 // --- 处理开始屏幕的点击逻辑 ---
 void handle_start_screen_click(int mx, int my) {
-    int tile_x = 40;
-    int tile_y = 60;
-    int tile_w = 80;
-    int tile_h = 60;
-
-    if (mx >= tile_x && mx <= tile_x + tile_w &&
-        my >= tile_y && my <= tile_y + tile_h) {
-        is_start_menu_open = 0;
-        console_init(); 
+    int tile_count = sizeof(start_tiles) / sizeof(start_tiles[0]);
+    for (int i = 0; i < tile_count; i++) {
+        const StartTile* tile = &start_tiles[i];
+        if (mx >= tile->x && mx <= tile->x + tile->w &&
+            my >= tile->y && my <= tile->y + tile->h) {
+            is_start_menu_open = 0;
+            if (!console_launch_tsk(tile->filename)) {
+                console_write("Launch failed: ");
+                console_write(tile->filename);
+                console_write("\n");
+            }
+            return;
+        }
     }
 }
 
@@ -167,13 +186,17 @@ void main() {
 
     // PID 0 (内核/GUI 线程) 的主循环
     while(1) {
+        // 主循环主动轮询输入，避免仅依赖 IRQ 导致的“假死”。
+        // 每次最多处理少量字节，防止长时间占用。
+        for (int i = 0; i < 8; i++) {
+            ps2_poll_inputs_once();
+        }
+
         // 1. 处理输入 (Input)
         ps2_mouse_event_t evt;
-        int has_event = 0;
 
         // 循环读取缓冲区直到清空
         while (ps2_get_mouse_event(&evt)) {
-            has_event = 1;
             mouse_x += evt.dx;
             mouse_y += evt.dy;
             
@@ -202,20 +225,30 @@ void main() {
             needs_redraw = 1;
         }
 
-        // 键盘处理
-        char k = ps2_getchar();
-        if (k) {
-            if (!is_start_menu_open) {
-                 console_handle_key(k);
-            }
-            if (k == 27 && is_start_menu_open) {
+        // 键盘处理：
+        // 1) 开始菜单打开时，键盘归内核处理（Esc 关闭）
+        // 2) 焦点在内核窗口（如 console）时，键盘给 console
+        // 3) 焦点在 tsk 进程窗口时，不在这里消费，交给 SYS_GET_KEY
+        Window* focused_win = win_get_focused();
+        Process* focused_proc = process_find_by_window(focused_win);
+
+        if (is_start_menu_open) {
+            char k = ps2_getchar();
+            if (k == 27) {
                 is_start_menu_open = 0;
+                needs_redraw = 1;
             }
-            needs_redraw = 1;
+        } else if (!focused_proc) {
+            char k = ps2_getchar();
+            if (k) {
+                console_handle_key(k);
+                needs_redraw = 1;
+            }
         }
 
         // 2. 渲染 (Rendering)
-        // 在多任务环境下，PID 0 负责 GUI 刷新
+        // 在多任务环境下持续刷新，保证窗口关闭/退出后不会残影。
+        needs_redraw = 1;
         if (needs_redraw) {
             if (is_start_menu_open) {
                 draw_start_screen();

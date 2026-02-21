@@ -15,9 +15,12 @@ void process_init() {
     // 它代表了 kernel.c 中的 main 循环
     Process* kernel_proc = (Process*)malloc(sizeof(Process));
     kernel_proc->pid = next_pid++;
+    strcpy(kernel_proc->name, "kernel");
     kernel_proc->state = PROCESS_RUNNING;
     kernel_proc->stack_base = 0; // 内核栈不需要我们释放
     kernel_proc->esp = 0;        // 当前正在运行，ESP 在 CPU 寄存器里，暂存 0
+    kernel_proc->sandbox_level = 0;
+    kernel_proc->focus_state_cache = -1;
     kernel_proc->win = 0;
     kernel_proc->next = 0;
 
@@ -30,7 +33,16 @@ void process_init() {
 void process_create(void (*entry_point)(), const char* name, Window* win) {
     Process* new_proc = (Process*)malloc(sizeof(Process));
     new_proc->pid = next_pid++;
+    if (name) {
+        int i = 0;
+        for (; i < 31 && name[i]; i++) new_proc->name[i] = name[i];
+        new_proc->name[i] = '\0';
+    } else {
+        new_proc->name[0] = '\0';
+    }
     new_proc->state = PROCESS_READY;
+    new_proc->sandbox_level = 0;
+    new_proc->focus_state_cache = -1;
     new_proc->win = win;
     
     // 分配栈空间
@@ -80,11 +92,55 @@ void process_exit() {
     // 实际 OS 需要回收资源
     if (current_process->pid == 0) return; // 内核进程不能退出
 
+    if (current_process->win) {
+        win_destroy(current_process->win);
+        current_process->win = 0;
+    }
+
     current_process->state = PROCESS_DEAD;
-    
-    // 强制触发一次调度 (通过软中断或者等待下一次时钟)
-    // 这里我们等待下一次时钟中断自然切换
-    while(1) __asm__ volatile("hlt");
+
+    // 不能返回到用户代码；_start 没有“exit 返回后”的安全路径。
+    // 这里显式开中断并等待时钟中断把当前 DEAD 进程切走。
+    while (1) {
+        __asm__ volatile("sti; hlt");
+    }
+}
+
+Process* process_find_by_window(Window* win) {
+    if (!win) return 0;
+
+    Process* p = process_list;
+    while (p) {
+        if (p->state != PROCESS_DEAD && p->win == win) {
+            return p;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+Process* process_find_by_name(const char* name) {
+    if (!name) return 0;
+
+    Process* p = process_list;
+    while (p) {
+        if (p->state != PROCESS_DEAD && strcmp(p->name, name) == 0) {
+            return p;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+int process_has_live_user_process(void) {
+    Process* p = process_list;
+    while (p) {
+        if (p->pid != 0 && p->state != PROCESS_DEAD) {
+            return 1;
+        }
+        p = p->next;
+    }
+    return 0;
 }
 
 // 调度器：Round Robin

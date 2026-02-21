@@ -28,11 +28,7 @@ void init_timer(unsigned int frequency) {
 // 它返回一个新的栈指针 (如果发生调度)
 unsigned int timer_tick_and_schedule(unsigned int current_esp) {
     tick++;
-    
-    // 每 10 个 tick 调度一次 (假设 100Hz，即 100ms 时间片)
-    if (tick % 5 == 0) {
-        return process_schedule(current_esp);
-    }
 
-    return current_esp;
+    // 每个 tick 都调度，保证用户进程能够及时获得时间片
+    return process_schedule(current_esp);
 }

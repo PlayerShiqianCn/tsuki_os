@@ -29,8 +29,10 @@ void win_handle_mouse(ps2_mouse_event_t* event, int mouse_x, int mouse_y);
 void win_destroy(Window* w); 
 void win_bring_to_front(Window* w);
 unsigned char win_get_pixel(Window* w, int x, int y);
+int win_set_title(Window* w, const char* title);
 int win_get_count();
 Window* win_get_at_layer(int index);
+Window* win_get_focused();
 
 // 更新窗口缓冲区的像素
 void win_put_pixel(Window* w, int x, int y, unsigned char color);

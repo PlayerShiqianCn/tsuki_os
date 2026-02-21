@@ -8,15 +8,34 @@ static Ext2SuperBlock ext2_sb;
 static Ext2GroupDesc ext2_gd;
 static int fs_ready = 0;
 
-// 定义用户程序加载到的固定物理内存地址 (4MB处)
-#define APP_LOAD_ADDRESS  0x300000
+static void* resolve_app_load_address(const char* filename) {
+    if (!filename) return 0;
+
+    if (strcmp(filename, "app.tsk") == 0) return (void*)APP_LOAD_APP;
+    if (strcmp(filename, "terminal.tsk") == 0) return (void*)APP_LOAD_TERMINAL;
+    if (strcmp(filename, "wm.tsk") == 0) return (void*)APP_LOAD_WM;
+    if (strcmp(filename, "start.tsk") == 0) return (void*)APP_LOAD_START;
+
+    // 目前 flat binary 不是位置无关代码，未知 .tsk 无法安全并行加载
+    return 0;
+}
 
 // 初始化文件系统
 void fs_init() {
+    // 按磁盘块读取到临时 1KB 缓冲，避免直接读入结构体导致越界覆盖全局状态
+    unsigned char sb_raw[1024];
+    unsigned char gd_raw[1024];
+
     // 读取 Superblock (Block 1)
     // Block 1 = 1024 bytes offset = 2 sectors.
     // 所以绝对扇区 = FS_BASE_SECTOR + 2
-    disk_read_sectors(FS_BASE_SECTOR + 2, 2, &ext2_sb);
+    disk_read_sectors(FS_BASE_SECTOR + 2, 2, sb_raw);
+    memset(&ext2_sb, 0, sizeof(ext2_sb));
+    {
+        unsigned int copy_len = sizeof(ext2_sb);
+        if (copy_len > 1024) copy_len = 1024;
+        memcpy(&ext2_sb, sb_raw, copy_len);
+    }
 
     // 恢复 Magic Check，因为 mkfs 修复了，现在应该能通过了
     if (ext2_sb.s_magic != EXT2_MAGIC) {
@@ -27,7 +46,13 @@ void fs_init() {
 
     // 读取 Block Group Descriptor (Block 2)
     // 绝对扇区 = FS_BASE_SECTOR + 4
-    disk_read_sectors(FS_BASE_SECTOR + 4, 2, &ext2_gd);
+    disk_read_sectors(FS_BASE_SECTOR + 4, 2, gd_raw);
+    memset(&ext2_gd, 0, sizeof(ext2_gd));
+    {
+        unsigned int copy_len = sizeof(ext2_gd);
+        if (copy_len > 1024) copy_len = 1024;
+        memcpy(&ext2_gd, gd_raw, copy_len);
+    }
     fs_ready = 1;
 }
 
@@ -211,14 +236,15 @@ int tsk_load(const char* filename, void** out_entry) {
     // 2. 获取文件大小
     unsigned int size = file.sys_file.size;
     if (size == 0) return 0;
+    if (size > APP_SLOT_SIZE) return 0;
     
-    // 3. 准备加载地址
-    void* load_addr = (void*)APP_LOAD_ADDRESS;
+    // 3. flat binary 需要加载到与链接地址匹配的固定槽位
+    void* load_addr = resolve_app_load_address(filename);
+    if (!load_addr) return 0;
     
     // 4. 【关键】直接读取整个文件到内存，不做任何 Header 解析
     // 因为 Makefile 里生成的已经是纯指令代码了
     if (app_file_read(&file, load_addr, size) != size) {
-        // console_write("Read failed\n");
         return 0;
     }
     

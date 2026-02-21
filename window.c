@@ -2,6 +2,7 @@
 #include "video.h"
 #include "utils.h"
 #include "heap.h"
+#include "process.h"
 
 // 声明外部依赖
 extern void put_pixel(int x, int y, unsigned char color);
@@ -131,6 +132,20 @@ unsigned char win_get_pixel(Window* w, int x, int y) {
     return 0;
 }
 
+int win_set_title(Window* w, const char* title) {
+    if (!w || !title) return 0;
+
+    int len = strlen(title);
+    char* new_title = (char*)malloc(len + 1);
+    if (!new_title) return 0;
+
+    strcpy(new_title, (char*)title);
+
+    if (w->title) free(w->title);
+    w->title = new_title;
+    return 1;
+}
+
 void win_draw_all() {
     for (int i = 0; i < win_count; i++) {
         Window* w = layers[i];
@@ -160,8 +175,8 @@ void win_draw_all() {
         }
 
         // 4. 画标题栏 (画在 buffer 之上，确保不被 buffer 里的背景色覆盖)
-        // 只有当前拖拽的窗口才高亮标题栏 (简单的焦点模拟)
-        int title_color = (is_dragging && drag_win == w) ? C_LIGHT_BLUE : C_BLUE;
+        int focused = (i == win_count - 1);
+        int title_color = focused ? C_LIGHT_BLUE : C_BLUE;
         
         draw_rect(w->x, w->y, w->w, TITLE_BAR_HEIGHT, title_color);
         draw_string(w->x + 4, w->y + (TITLE_BAR_HEIGHT - 8)/2, w->title, C_WHITE);
@@ -206,6 +221,11 @@ void win_handle_mouse(ps2_mouse_event_t* event, int mx, int my) {
 
                     if (mx >= btn_x && mx <= btn_x + btn_size &&
                         my >= btn_y && my <= btn_y + btn_size) {
+                        Process* owner = process_find_by_window(w);
+                        if (owner && owner->pid != 0) {
+                            owner->state = PROCESS_DEAD;
+                            owner->win = 0;
+                        }
                         win_destroy(w);
                         return;
                     }
@@ -241,4 +261,9 @@ int win_get_count() {
 Window* win_get_at_layer(int index) {
     if (index < 0 || index >= win_count) return 0;
     return layers[index];
+}
+
+Window* win_get_focused() {
+    if (win_count <= 0) return 0;
+    return layers[win_count - 1];
 }

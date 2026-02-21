@@ -6,14 +6,18 @@
 #include "process.h"
 #include "window.h"
 
-// 定义命令执行函数的类型 (用于 .tsk 跳转)
-typedef void (*tsk_func_t)(void);
-
 // 声明外部加载器函数
 extern int tsk_load(const char* filename, void** entry_point);
 
 // 全局 Console 实例
 static Console console_inst;
+static int app_launch_serial = 0;
+
+static const char* normalize_tsk_name(const char* filename) {
+    if (!filename) return filename;
+    if (strcmp(filename, "ter.tsk") == 0) return "terminal.tsk";
+    return filename;
+}
 
 // 辅助：清空所有缓冲
 void console_clear() {
@@ -64,6 +68,48 @@ void app_window_render(Window* w) {
             draw_pixel(start_x + x, start_y + y, color);
         }
     }
+}
+
+int console_launch_tsk(const char* filename) {
+    if (!filename) return 0;
+    filename = normalize_tsk_name(filename);
+
+    Process* existing = process_find_by_name(filename);
+    if (existing && existing->win) {
+        win_bring_to_front(existing->win);
+        console_write("Already running, focused.\n");
+        return 1;
+    }
+
+    void* entry_point = 0;
+    if (!tsk_load(filename, &entry_point)) {
+        return 0;
+    }
+
+    int w = 220;
+    int h = 160;
+    if (strcmp(filename, "app.tsk") == 0) {
+        w = 200;
+        h = 150;
+    } else if (strcmp(filename, "terminal.tsk") == 0) {
+        w = 240;
+        h = 170;
+    }
+
+    int x = 52 + (app_launch_serial * 18) % 96;
+    int y = 30 + (app_launch_serial * 14) % 70;
+    app_launch_serial++;
+
+    Window* app_win = win_create(x, y, w, h, (char*)filename, C_BLACK);
+    if (!app_win) {
+        return 0;
+    }
+
+    app_win->extra_draw = 0;
+    process_create((void (*)())entry_point, filename, app_win);
+    win_draw_all();
+    video_swap_buffer();
+    return 1;
 }
 
 // 核心：向终端写入字符串
@@ -214,8 +260,11 @@ void execute_command(char* cmd) {
         console_write("ls  - List files\n");
         console_write("cat <filename> - Display file content\n");
         console_write("help - Show this help message\n");
-
-        console_write("You can also run .tsk files.\n");
+        console_write("You can also run .tsk files:\n");
+        console_write("terminal.tsk\n");
+        console_write("wm.tsk\n");
+        console_write("start.tsk\n");
+        console_write("app.tsk\n");
         return;
     }
 
@@ -223,27 +272,11 @@ void execute_command(char* cmd) {
     int len = strlen(cmd);
     if (len > 4 && strcmp(cmd + len - 4, ".tsk") == 0) {
         console_write("Launching process...\n");
-
-        void* entry_point = 0;
-
-        // 1. 加载代码到内存
-        if (tsk_load(cmd, &entry_point)) {
-
-            // 2. 创建一个专属窗口
-            Window* app_win = win_create(100, 80, 200, 150, cmd, C_BLACK);
-            app_win->extra_draw = app_window_render;
+        if (console_launch_tsk(cmd)) {
             win_draw_all();
-
-            // 3. 【关键修改】创建进程而不是直接调用
-            process_create((void (*)())entry_point, cmd, app_win);
-
-            // 强制重绘以显示App内容
-            win_draw_all();
-
             console_write("Process started.\n");
-
         } else {
-            console_write("Load failed.\n");
+            console_write("Launch failed.\n");
         }
         return;
     }
@@ -289,11 +322,11 @@ void console_init() {
     console_clear();
     
     // 创建一个窗口，居中
-    console_inst.win = win_create(40, 40, 240, 140, "Terminal", C_BLACK);
+    console_inst.win = win_create(40, 40, 240, 140, "terminal.tsk", C_BLACK);
     console_inst.win->extra_draw = console_render;
     
     // 打印欢迎信息
     console_write("MyOS v0.1 MultiTask\n");
-    console_write("Type 'app.tsk' to run\n");
+    console_write("Type .tsk to run apps\n");
     console_write("> ");
 }

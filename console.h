@@ -20,4 +20,5 @@ void console_handle_key(char c);
 void console_draw(); // 专门的刷新函数
 void console_render(Window* w); // 窗口专用渲染函数
 void console_write(const char* str);
+int console_launch_tsk(const char* filename);
 #endif

@@ -8,6 +8,18 @@
 #define SYS_DRAW_RECT   3
 #define SYS_SLEEP       4
 #define SYS_SET_SANDBOX 5
+#define SYS_GET_KEY         6
+#define SYS_DRAW_TEXT       7
+#define SYS_WIN_CREATE      8
+#define SYS_WIN_SET_TITLE   9
+#define SYS_WIN_IS_FOCUSED  10
+#define SYS_WIN_GET_EVENT   11
+#define SYS_FS_LIST         12
+#define SYS_LAUNCH_TSK      13
+
+// 窗口事件位
+#define WIN_EVENT_FOCUS_CHANGED 0x1
+#define WIN_EVENT_KEY_READY     0x2
 
 // 寄存器结构体
 // 注意：这必须与 kernel_entry.asm 中 isr80 里的 push 顺序严格对应

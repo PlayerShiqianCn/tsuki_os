@@ -2,7 +2,11 @@
 #define FS_H
 
 #include "disk.h"
-#define APP_LOAD_ADDRESS  0x400000 
+#define APP_SLOT_SIZE         0x20000
+#define APP_LOAD_APP          0x300000
+#define APP_LOAD_TERMINAL     0x320000
+#define APP_LOAD_WM           0x340000
+#define APP_LOAD_START        0x360000
 // ----------------------------------------------------
 // 【关键】定义文件系统分区起始扇区 (1MB = 2048 扇区)
 // ----------------------------------------------------
