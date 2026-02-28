@@ -7,6 +7,8 @@
 #define APP_LOAD_TERMINAL     0x320000
 #define APP_LOAD_WM           0x340000
 #define APP_LOAD_START        0x360000
+#define APP_LOAD_IMAGE        0x380000
+#define APP_LOAD_SETTINGS     0x3A0000
 // ----------------------------------------------------
 // 【关键】定义文件系统分区起始扇区 (1MB = 2048 扇区)
 // ----------------------------------------------------
@@ -170,9 +172,11 @@ typedef struct {
 // ==================== 函数声明 ====================
 
 void fs_init();
+int fs_is_ready(void);
 void fs_list_files();
-void fs_get_file_list(char* buffer, int max_len);
+int fs_get_file_list(char* buffer, int max_len, const char* dir_path);
 int fs_read_file(const char* filename, void* buffer);
+int fs_write_file(const char* filename, const void* buffer, unsigned int size);
 
 // 封装接口
 int sys_file_open(const char* filename, SystemFile* out_file);

@@ -110,6 +110,14 @@ static int is_e1000(unsigned short vendor, unsigned short device) {
     return 0;
 }
 
+static void sync_net_info_addrs(void) {
+    for (int i = 0; i < 4; i++) {
+        g_net_info.local_ip[i] = g_local_ip[i];
+        g_net_info.gateway_ip[i] = g_gateway_ip[i];
+        g_net_info.dns_ip[i] = g_dns_ip[i];
+    }
+}
+
 static int find_e1000_pci(PciDeviceInfo* out) {
     PciDeviceInfo info;
     for (unsigned int bus = 0; bus < 1; bus++) {
@@ -893,6 +901,7 @@ void net_init(void) {
 
     PciDeviceInfo dev;
     memset(&g_net_info, 0, sizeof(g_net_info));
+    sync_net_info_addrs();
 
     if (!find_e1000_pci(&dev)) {
         // 没找到 e1000 时，保留“网卡存在性”探测信息
@@ -939,10 +948,15 @@ void net_init(void) {
 
     unsigned int mmio = bar0 & 0xFFFFFFF0u;
     if (mmio == 0) {
-        g_net_info.initialized = 0;
-        g_net_info.tx_ready = 0;
-        g_net_info.rx_ready = 0;
-        return;
+        unsigned int desired_mmio = 0xFEB00000u;
+        pci_config_write_dword(dev.bus, dev.slot, dev.func, 0x10, desired_mmio);
+        mmio = pci_config_read_dword(dev.bus, dev.slot, dev.func, 0x10) & 0xFFFFFFF0u;
+        if (mmio == 0) {
+            g_net_info.initialized = 0;
+            g_net_info.tx_ready = 0;
+            g_net_info.rx_ready = 0;
+            return;
+        }
     }
 
     // 开启 Memory Space + Bus Master
@@ -975,6 +989,7 @@ void net_set_local_ip(unsigned char a, unsigned char b, unsigned char c, unsigne
     g_local_ip[1] = b;
     g_local_ip[2] = c;
     g_local_ip[3] = d;
+    sync_net_info_addrs();
 }
 
 void net_get_local_ip(unsigned char out_ip[4]) {
@@ -990,6 +1005,7 @@ void net_set_gateway(unsigned char a, unsigned char b, unsigned char c, unsigned
     g_gateway_ip[1] = b;
     g_gateway_ip[2] = c;
     g_gateway_ip[3] = d;
+    sync_net_info_addrs();
 }
 
 void net_get_gateway(unsigned char out_ip[4]) {
@@ -1005,6 +1021,7 @@ void net_set_dns_server(unsigned char a, unsigned char b, unsigned char c, unsig
     g_dns_ip[1] = b;
     g_dns_ip[2] = c;
     g_dns_ip[3] = d;
+    sync_net_info_addrs();
 }
 
 void net_get_dns_server(unsigned char out_ip[4]) {

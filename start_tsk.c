@@ -1,28 +1,22 @@
 #include "lib.h"
 
-#define ITEM_COUNT 4
-#define TILE_W 86
-#define TILE_H 40
+// 全屏无边框窗口: 320x200
+#define CLIENT_W 320
+#define CLIENT_H 200
 
-typedef struct {
-    const char* title;
-    const char* file;
-    int color;
-    int x;
-    int y;
-} Tile;
+#define MAX_TILES 16
+#define TILE_W 120
+#define TILE_H 60
+#define TILES_PER_ROW 2
+#define START_X 20
+#define START_Y 50
+#define SPACING_X 140
+#define SPACING_Y 70
 
 static unsigned char stack[4096];
 static int selected = 0;
-static int is_focused = 0;
-static char status_text[32] = "Enter launch | q exit";
-
-static const Tile tiles[ITEM_COUNT] = {
-    {"Terminal", "terminal.tsk", 2, 8, 24},
-    {"WinMgr",   "wm.tsk",       1, 102, 24},
-    {"Start",    "start.tsk",    4, 8, 74},
-    {"Demo",     "app.tsk",      14, 102, 74},
-};
+static StartTile all_tiles[MAX_TILES];
+static int total_tiles = 0;
 
 void main();
 
@@ -37,97 +31,106 @@ __attribute__((naked)) void _start() {
     );
 }
 
-static void set_status(const char* a, const char* b) {
-    int p = 0;
-    for (int i = 0; a[i] && p < (int)sizeof(status_text) - 1; i++) status_text[p++] = a[i];
-    for (int i = 0; b[i] && p < (int)sizeof(status_text) - 1; i++) status_text[p++] = b[i];
-    status_text[p] = '\0';
+static void launch_and_close(void) {
+    if (total_tiles == 0) return;
+    const char* name = all_tiles[selected].file;
+    launch_tsk(name);
+    exit();
 }
 
-static void launch_selected(void) {
-    const char* name = tiles[selected].file;
-    if (launch_tsk(name)) {
-        set_status("Launched/focused: ", name);
-    } else {
-        set_status("Launch failed: ", name);
+static void load_tiles(void) {
+    total_tiles = 0;
+    
+    // 1. 固定添加 Terminal
+    StartTile* t = &all_tiles[total_tiles++];
+    for(int i=0; i<15 && "Terminal"[i]; i++) t->title[i] = "Terminal"[i];
+    for(int i=0; i<15 && "terminal.tsk"[i]; i++) t->file[i] = "terminal.tsk"[i];
+    t->color = 2; // Dark Green
+
+    // 2. 从内核获取动态注册的磁贴
+    StartTile dyn_tiles[15];
+    int count = get_start_tiles(&dyn_tiles[0], 15);
+    
+    for (int i = 0; i < count && total_tiles < MAX_TILES; i++) {
+        all_tiles[total_tiles++] = dyn_tiles[i];
+    }
+    
+    // 计算排版坐标
+    for (int i = 0; i < total_tiles; i++) {
+        int row = i / TILES_PER_ROW;
+        int col = i % TILES_PER_ROW;
+        all_tiles[i].x = START_X + col * SPACING_X;
+        all_tiles[i].y = START_Y + row * SPACING_Y;
     }
 }
 
 static void render(void) {
-    draw_rect(0, 0, 196, 128, 13);
-    draw_rect(0, 0, 196, 14, 1);
-    draw_text(4, 3, "start.tsk", 15);
-    draw_text(124, 3, is_focused ? "FOCUS" : "BLUR ", is_focused ? 10 : 12);
-    draw_text(6, 16, "WASD move | Enter launch", 15);
+    draw_rect(0, 0, CLIENT_W, CLIENT_H, 5); // 紫色背景
+    draw_text(20, 14, "TSK Apps", 15);
+    draw_text(20, 30, "Click | Enter | Arrows", 15);
 
-    for (int i = 0; i < ITEM_COUNT; i++) {
-        int x = tiles[i].x;
-        int y = tiles[i].y;
+    for (int i = 0; i < total_tiles; i++) {
+        int x = all_tiles[i].x;
+        int y = all_tiles[i].y;
+
         if (i == selected) {
-            draw_rect(x - 2, y - 2, TILE_W + 4, TILE_H + 4, 15);
+            draw_rect(x - 3, y - 3, TILE_W + 6, TILE_H + 6, 15);
         }
-        draw_rect(x, y, TILE_W, TILE_H, tiles[i].color);
-        draw_text(x + 6, y + 8, tiles[i].title, 15);
-        draw_text(x + 6, y + 22, tiles[i].file, 15);
-    }
 
-    draw_rect(0, 118, 196, 10, 8);
-    draw_text(2, 119, status_text, 15);
+        draw_rect(x, y, TILE_W, TILE_H, all_tiles[i].color);
+        draw_text(x + 12, y + 16, all_tiles[i].title, 15);
+        draw_text(x + 12, y + 34, all_tiles[i].file, 15);
+    }
 }
 
 void main() {
     set_sandbox(1);
     win_set_title("start.tsk");
-    is_focused = win_is_focused();
+    
+    load_tiles();
     render();
 
     while (1) {
-        int ev = win_get_event();
-        if (ev & WIN_EVENT_FOCUS_CHANGED) {
-            is_focused = win_is_focused();
-            render();
+        int mx, my;
+        if (get_mouse_click(&mx, &my)) {
+            for (int i = 0; i < total_tiles; i++) {
+                if (mx >= all_tiles[i].x && mx < all_tiles[i].x + TILE_W &&
+                    my >= all_tiles[i].y && my < all_tiles[i].y + TILE_H) {
+                    selected = i;
+                    launch_and_close();
+                    return;
+                }
+            }
         }
 
+        int ev = win_get_event();
         if (!(ev & WIN_EVENT_KEY_READY)) continue;
 
         int key = get_key();
         if (!key) continue;
 
-        if (key >= '1' && key <= '4') {
-            selected = key - '1';
-            launch_selected();
-            render();
-            continue;
-        }
-
-        if (key == 'a' || key == 'h') {
-            if ((selected % 2) == 1) selected--;
-            render();
-            continue;
-        }
-        if (key == 'd' || key == 'l') {
-            if ((selected % 2) == 0) selected++;
-            render();
-            continue;
-        }
-        if (key == 'w' || key == 'k') {
-            if (selected >= 2) selected -= 2;
-            render();
-            continue;
-        }
-        if (key == 's' || key == 'j') {
-            if (selected <= 1) selected += 2;
-            render();
-            continue;
-        }
         if (key == '\n' || key == ' ') {
-            launch_selected();
-            render();
-            continue;
+            launch_and_close();
+            return;
         }
-        if (key == 'q') {
+        if (key == 'q' || key == 27) {
             exit();
             return;
+        }
+        
+        // 简单的键盘导航 (WASD)
+        if (key == 'a' || key == 'h') {
+            if (selected > 0) selected--;
+            render();
+        } else if (key == 'd' || key == 'l') {
+            if (selected < total_tiles - 1) selected++;
+            render();
+        } else if (key == 'w' || key == 'k') {
+            if (selected >= TILES_PER_ROW) selected -= TILES_PER_ROW;
+            render();
+        } else if (key == 's' || key == 'j') {
+            if (selected + TILES_PER_ROW < total_tiles) selected += TILES_PER_ROW;
+            render();
         }
     }
 }

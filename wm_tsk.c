@@ -126,9 +126,9 @@ void main() {
         if (!key) continue;
 
         if (key == 't') launch_with_log("terminal.tsk");
-        else if (key == 's') launch_with_log("start.tsk");
+        else if (key == 's') launch_with_log("system/start.tsk");
         else if (key == 'a') launch_with_log("app.tsk");
-        else if (key == 'w') launch_with_log("wm.tsk");
+        else if (key == 'w') launch_with_log("system/wm.tsk");
         else if (key == 'l') show_file_list();
         else if (key == 'c') clear_logs();
         else if (key == 'q') {

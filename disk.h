@@ -9,8 +9,8 @@
 void disk_init();
 // 从 LBA 地址读取 count 个扇区到 buffer
 void disk_read_sectors(int lba, int count, void* buffer);
-// 写入扇区 (暂时先不实现，只做只读文件系统)
-// void disk_write_sectors(int lba, int count, void* buffer);
+// 向 LBA 地址写入 count 个扇区
+void disk_write_sectors(int lba, int count, const void* buffer);
 //outb 和 inb 的封装
 static inline unsigned char inb(unsigned short port) {
     unsigned char ret;

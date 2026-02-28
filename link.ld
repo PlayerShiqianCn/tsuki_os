@@ -28,7 +28,11 @@ SECTIONS
 
     .bss : ALIGN(4K)
     {
+        __bss_start = .;
         *(COMMON)
         *(.bss)
+        __bss_end = .;
     }
 }
+
+ASSERT(__bss_end < 0x9F000, "Kernel BSS overlaps boot stack")
