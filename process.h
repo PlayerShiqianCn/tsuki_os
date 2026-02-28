@@ -20,6 +20,10 @@ typedef struct Process {
     int sandbox_level;
     int focus_state_cache;
     Window* win;            // 绑定的窗口
+    // 鼠标事件（由内核写入，进程通过 syscall 读取）
+    int mouse_click_x;      // 点击位置 x（相对于客户区）
+    int mouse_click_y;      // 点击位置 y（相对于客户区）
+    int has_mouse_event;    // 是否有未读鼠标事件
     struct Process* next;   // 链表
 } Process;
 
@@ -27,7 +31,7 @@ typedef struct Process {
 extern Process* current_process;
 
 void process_init();
-void process_create(void (*entry_point)(), const char* name, Window* win);
+int process_create(void (*entry_point)(), const char* name, Window* win);
 void process_exit();
 Process* process_find_by_window(Window* win);
 Process* process_find_by_name(const char* name);

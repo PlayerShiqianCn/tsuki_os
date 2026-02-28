@@ -108,21 +108,91 @@ typedef struct {
     uint32_t bg_reserved[3];
 } Ext2GroupDesc;
 
+typedef struct {
+    char dir[64];
+    char name[256];
+    int size;
+    int blocks_needed;
+    int indirect_blocks;
+    int first_data_block;
+    int indirect_block_num;
+} FileInfo;
+
+typedef struct {
+    char name[64];
+    int inode_num;
+    int data_block;
+    int file_count;
+} DirInfo;
+
+static const char* image_path_from_arg(const char* arg) {
+    if (!arg) return "";
+    if (strncmp(arg, ".fsroot/", 8) == 0) return arg + 8;
+    {
+        const char* name = strrchr(arg, '/');
+        return name ? (name + 1) : arg;
+    }
+}
+
+static void split_image_path(const char* image_path, char* dir, int dir_max, char* name, int name_max) {
+    const char* slash;
+    int dir_len;
+    int name_len;
+
+    if (!dir || !name || dir_max <= 0 || name_max <= 0) return;
+    dir[0] = '\0';
+    name[0] = '\0';
+    if (!image_path || !image_path[0]) return;
+
+    slash = strrchr(image_path, '/');
+    if (!slash) {
+        strncpy(name, image_path, name_max - 1);
+        name[name_max - 1] = '\0';
+        return;
+    }
+
+    dir_len = (int)(slash - image_path);
+    if (dir_len >= dir_max) dir_len = dir_max - 1;
+    memcpy(dir, image_path, dir_len);
+    dir[dir_len] = '\0';
+
+    name_len = strlen(slash + 1);
+    if (name_len >= name_max) name_len = name_max - 1;
+    memcpy(name, slash + 1, name_len);
+    name[name_len] = '\0';
+}
+
+static void write_dir_entry(char* block, int* pos, uint32_t inode, uint8_t file_type, const char* name, int is_last) {
+    Ext2DirEntry* de;
+    int entry_len;
+
+    if (!block || !pos || !name) return;
+
+    de = (Ext2DirEntry*)(block + *pos);
+    de->inode = inode;
+    de->name_len = (uint8_t)strlen(name);
+    de->file_type = file_type;
+    strcpy(de->name, name);
+
+    entry_len = 8 + de->name_len;
+    if (entry_len % 4) entry_len += 4 - (entry_len % 4);
+    de->rec_len = is_last ? (BLOCK_SIZE - *pos) : entry_len;
+    *pos += de->rec_len;
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         printf("Usage: ./mkfs <output.img> <boot.bin> <kernel.bin> <files...>\n");
         return 1;
     }
 
-    // --- 收集文件信息 ---
-    typedef struct {
-        char name[256];
-        int size;
-    } FileInfo;
     FileInfo files[64];
+    DirInfo dirs[16];
     int file_count = 0;
+    int dir_count = 0;
     
     for (int i = 4; i < argc && file_count < 64; i++) {
+        const char* image_path;
         FILE* f = fopen(argv[i], "rb");
         if (!f) { printf("Warning: Cannot open %s\n", argv[i]); continue; }
         
@@ -130,13 +200,50 @@ int main(int argc, char** argv) {
         int size = ftell(f);
         fclose(f);
         
-        // 提取文件名
-        char* path = argv[i];
-        char* name = strrchr(path, '/');
-        if (name) name++; else name = path;
-        
-        strcpy(files[file_count].name, name);
+        image_path = image_path_from_arg(argv[i]);
+        split_image_path(image_path, files[file_count].dir, sizeof(files[file_count].dir),
+                         files[file_count].name, sizeof(files[file_count].name));
+        if (files[file_count].name[0] == '\0') {
+            printf("Warning: Invalid image path %s\n", argv[i]);
+            continue;
+        }
+
+        if (files[file_count].dir[0]) {
+            int found = -1;
+            if (strchr(files[file_count].dir, '/')) {
+                printf("Error: Nested directories are not supported: %s\n", image_path);
+                return 1;
+            }
+            for (int d = 0; d < dir_count; d++) {
+                if (strcmp(dirs[d].name, files[file_count].dir) == 0) {
+                    found = d;
+                    break;
+                }
+            }
+            if (found < 0) {
+                if (dir_count >= (int)(sizeof(dirs) / sizeof(dirs[0]))) {
+                    printf("Error: Too many top-level directories.\n");
+                    return 1;
+                }
+                strcpy(dirs[dir_count].name, files[file_count].dir);
+                dirs[dir_count].inode_num = 0;
+                dirs[dir_count].data_block = 0;
+                dirs[dir_count].file_count = 0;
+                found = dir_count;
+                dir_count++;
+            }
+            dirs[found].file_count++;
+        }
+
         files[file_count].size = size;
+        files[file_count].blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        if (files[file_count].blocks_needed > (12 + 256)) {
+            printf("Error: File too large for single indirect blocks: %s\n", image_path);
+            return 1;
+        }
+        files[file_count].indirect_blocks = (files[file_count].blocks_needed > 12) ? 1 : 0;
+        files[file_count].first_data_block = 0;
+        files[file_count].indirect_block_num = 0;
         file_count++;
     }
 
@@ -188,8 +295,10 @@ int main(int argc, char** argv) {
     
     // 计算需要的块数
     int total_data_blocks = 0;
-    for(int i=0; i<file_count; i++) total_data_blocks += (files[i].size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    int total_blocks = 100 + total_data_blocks; // 预留一些
+    for(int i=0; i<file_count; i++) {
+        total_data_blocks += files[i].blocks_needed + files[i].indirect_blocks;
+    }
+    int total_blocks = 100 + total_data_blocks + dir_count; // 预留一些
     if (total_blocks < 64) total_blocks = 64; // 最小限制
 
     int num_groups = 1; // 简单起见，只有1个块组
@@ -207,7 +316,7 @@ int main(int argc, char** argv) {
     sb.s_inodes_count = num_groups * inodes_per_group;
     sb.s_blocks_count = blocks_per_group;
     sb.s_free_blocks_count = sb.s_blocks_count - total_blocks; // 粗略计算
-    sb.s_free_inodes_count = sb.s_inodes_count - 10 - file_count;
+    sb.s_free_inodes_count = sb.s_inodes_count - 10 - file_count - dir_count;
     sb.s_first_data_block = 1; // 1KB Block size -> SB is on block 1
     sb.s_log_block_size = 0;   // 1024 bytes
     sb.s_blocks_per_group = blocks_per_group;
@@ -232,7 +341,7 @@ int main(int argc, char** argv) {
     gd.bg_inode_table = 5;
     gd.bg_free_blocks_count = sb.s_free_blocks_count;
     gd.bg_free_inodes_count = sb.s_free_inodes_count;
-    gd.bg_used_dirs_count = 1; // Root
+    gd.bg_used_dirs_count = 1 + dir_count; // Root + top-level dirs
 
     fwrite(&gd, 1, sizeof(gd), out);
     // 填充 GD 到 Block 结束
@@ -245,7 +354,7 @@ int main(int argc, char** argv) {
     char block_bitmap[BLOCK_SIZE];
     memset(block_bitmap, 0, BLOCK_SIZE);
     // 标记前 N 个位
-    int reserved_blocks = 5 + (inodes_per_group * 128 / BLOCK_SIZE) + total_data_blocks + 10;
+    int reserved_blocks = 5 + (inodes_per_group * 128 / BLOCK_SIZE) + total_data_blocks + 10 + dir_count;
     for(int i=0; i<reserved_blocks; i++) {
          block_bitmap[i/8] |= (1 << (i%8));
     }
@@ -256,14 +365,15 @@ int main(int argc, char** argv) {
     memset(inode_bitmap, 0, BLOCK_SIZE);
     // 1-10 resv, 11+ user files. 
     // Inode 2 is Root.
-    inode_bitmap[0] = 0xFF; // 0-7 used
-    inode_bitmap[1] = 0x03; // 8-9 (reserved), 10 (reserved) - simplified
-    // 实际上我们需要标记 inode 2 和 inode 11...11+count
     memset(inode_bitmap, 0, BLOCK_SIZE);
     inode_bitmap[0] = 0x07; // 1, 2, Used. (bit 0 is inode 1)
+    for (int d = 0; d < dir_count; d++) {
+        int idx = 10 + d;
+        inode_bitmap[idx / 8] |= (1 << (idx % 8));
+    }
     // 标记文件 inodes
     for(int i=0; i<file_count; i++) {
-        int idx = 10 + i; // inode 11 is index 10
+        int idx = 10 + dir_count + i;
         inode_bitmap[idx/8] |= (1 << (idx%8));
     }
     fwrite(inode_bitmap, 1, BLOCK_SIZE, out);
@@ -277,26 +387,50 @@ int main(int argc, char** argv) {
     Ext2Inode* root = (Ext2Inode*)(inode_table + 128); // Index 1
     root->i_mode = 0x41ED; // Dir
     root->i_size = BLOCK_SIZE; // 1 block for dir entries
-    root->i_links_count = 2;
+    root->i_links_count = 2 + dir_count;
     int inode_table_blocks = inode_table_len / BLOCK_SIZE;
     int root_data_block = 5 + inode_table_blocks; // 紧接着 inode table
     root->i_blocks = 2; // 512b sectors
     root->i_block[0] = root_data_block;
 
+    int file_inode_base = 11 + dir_count;
+    int file_data_start_block = root_data_block + 1 + dir_count;
+
+    for (int d = 0; d < dir_count; d++) {
+        Ext2Inode* subdir = (Ext2Inode*)(inode_table + (10 + d) * 128);
+        dirs[d].inode_num = 11 + d;
+        dirs[d].data_block = root_data_block + 1 + d;
+        subdir->i_mode = 0x41ED; // Dir
+        subdir->i_size = BLOCK_SIZE;
+        subdir->i_links_count = 2;
+        subdir->i_blocks = 2;
+        subdir->i_block[0] = dirs[d].data_block;
+    }
+
     // --- File Inodes (Inode 11+, index 10+) ---
-    int current_data_block = root_data_block + 1;
+    int current_data_block = file_data_start_block;
 
     for (int i=0; i<file_count; i++) {
-        Ext2Inode* file_node = (Ext2Inode*)(inode_table + (10 + i) * 128);
+        Ext2Inode* file_node = (Ext2Inode*)(inode_table + (file_inode_base - 1 + i) * 128);
         file_node->i_mode = 0x81C0; // File
         file_node->i_size = files[i].size;
         file_node->i_links_count = 1;
-        int blocks_needed = (files[i].size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        file_node->i_blocks = blocks_needed * 2; // 512b sectors count
-        
+        int blocks_needed = files[i].blocks_needed;
+        file_node->i_blocks = (blocks_needed + files[i].indirect_blocks) * 2; // 512b sectors count
+        files[i].first_data_block = current_data_block;
+        files[i].indirect_block_num = 0;
+
         for(int b=0; b<blocks_needed && b<12; b++) {
-            file_node->i_block[b] = current_data_block++;
+            file_node->i_block[b] = current_data_block + b;
         }
+
+        if (blocks_needed > 12) {
+            int indirect_block = current_data_block + 12;
+            files[i].indirect_block_num = indirect_block;
+            file_node->i_block[12] = indirect_block;
+        }
+
+        current_data_block += blocks_needed + files[i].indirect_blocks;
     }
 
     fwrite(inode_table, 1, inode_table_len, out);
@@ -306,49 +440,91 @@ int main(int argc, char** argv) {
     char root_dir[BLOCK_SIZE];
     memset(root_dir, 0, BLOCK_SIZE);
     int pos = 0;
+    int root_visible_files = 0;
+    int root_entries_total = 0;
 
-    // Entry: .
-    Ext2DirEntry* de = (Ext2DirEntry*)root_dir;
-    de->inode = 2; de->name_len = 1; de->file_type = 2; strcpy(de->name, ".");
-    de->rec_len = 12; pos += de->rec_len;
-
-    // Entry: ..
-    de = (Ext2DirEntry*)(root_dir + pos);
-    de->inode = 2; de->name_len = 2; de->file_type = 2; strcpy(de->name, "..");
-    de->rec_len = 12; pos += de->rec_len;
-
-    // Files
-    for (int i=0; i<file_count; i++) {
-        de = (Ext2DirEntry*)(root_dir + pos);
-        de->inode = 11 + i;
-        de->name_len = strlen(files[i].name);
-        de->file_type = 1;
-        strcpy(de->name, files[i].name);
-        
-        int entry_len = 8 + de->name_len;
-        if (entry_len % 4) entry_len += 4 - (entry_len % 4);
-        de->rec_len = entry_len;
-        
-        if (i == file_count - 1) {
-            // Last entry takes rest of block
-            de->rec_len = BLOCK_SIZE - pos;
-        }
-        
-        pos += de->rec_len;
+    for (int i = 0; i < file_count; i++) {
+        if (files[i].dir[0] == '\0') root_visible_files++;
     }
+    root_entries_total = root_visible_files + dir_count;
+
+    write_dir_entry(root_dir, &pos, 2, EXT2_FT_DIR, ".", 0);
+    write_dir_entry(root_dir, &pos, 2, EXT2_FT_DIR, "..", root_entries_total == 0);
+
+    {
+        int written = 0;
+        for (int i = 0; i < file_count; i++) {
+            int is_last;
+            if (files[i].dir[0] != '\0') continue;
+            written++;
+            is_last = (written == root_entries_total);
+            write_dir_entry(root_dir, &pos, file_inode_base + i, EXT2_FT_REG_FILE, files[i].name, is_last);
+        }
+    }
+
+    for (int d = 0; d < dir_count; d++) {
+        int entry_index = root_visible_files + d + 1;
+        write_dir_entry(root_dir, &pos, dirs[d].inode_num, EXT2_FT_DIR, dirs[d].name,
+                        entry_index == root_entries_total);
+    }
+
     fwrite(root_dir, 1, BLOCK_SIZE, out);
+
+    for (int d = 0; d < dir_count; d++) {
+        char subdir_block[BLOCK_SIZE];
+        int subpos = 0;
+
+        memset(subdir_block, 0, BLOCK_SIZE);
+        write_dir_entry(subdir_block, &subpos, dirs[d].inode_num, EXT2_FT_DIR, ".", 0);
+        write_dir_entry(subdir_block, &subpos, 2, EXT2_FT_DIR, "..", dirs[d].file_count == 0);
+
+        {
+            int written = 0;
+            for (int i = 0; i < file_count; i++) {
+                if (strcmp(files[i].dir, dirs[d].name) != 0) continue;
+                written++;
+                write_dir_entry(subdir_block, &subpos, file_inode_base + i, EXT2_FT_REG_FILE,
+                                files[i].name, written == dirs[d].file_count);
+            }
+        }
+
+        fwrite(subdir_block, 1, BLOCK_SIZE, out);
+    }
 
     // 3.8 写入文件数据
     for (int i=0; i<file_count; i++) {
         FILE* f = fopen(argv[i + 4], "rb");
         char fbuf[BLOCK_SIZE];
         int remain = files[i].size;
-        while(remain > 0) {
+        int block_index = 0;
+
+        while(remain > 0 && block_index < files[i].blocks_needed && block_index < 12) {
             memset(fbuf, 0, BLOCK_SIZE);
             int n = (remain > BLOCK_SIZE) ? BLOCK_SIZE : remain;
             fread(fbuf, 1, n, f);
             fwrite(fbuf, 1, BLOCK_SIZE, out); // Always write full block padding
-            remain -= BLOCK_SIZE;
+            remain -= n;
+            block_index++;
+        }
+
+        if (files[i].indirect_blocks) {
+            unsigned int indirect_entries[BLOCK_SIZE / 4];
+            memset(indirect_entries, 0, sizeof(indirect_entries));
+            for (int j = 12; j < files[i].blocks_needed; j++) {
+                indirect_entries[j - 12] = files[i].indirect_block_num + (j - 12) + 1;
+            }
+            fwrite(indirect_entries, 1, BLOCK_SIZE, out);
+        }
+
+        while(remain > 0 && block_index < files[i].blocks_needed) {
+            memset(fbuf, 0, BLOCK_SIZE);
+            {
+                int n = (remain > BLOCK_SIZE) ? BLOCK_SIZE : remain;
+                fread(fbuf, 1, n, f);
+                fwrite(fbuf, 1, BLOCK_SIZE, out);
+                remain -= n;
+            }
+            block_index++;
         }
         fclose(f);
     }

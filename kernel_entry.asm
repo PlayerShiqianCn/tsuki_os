@@ -227,11 +227,15 @@ irq15_handler_stub:
 ; --- 错误异常处理 ---
 isr_err_stub:
     cli
-    pusha
-    mov edi, 0xA0000
-    mov al, 4 ; 红色
-    mov ecx, 320*200
-    rep stosb
+    cld
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov esp, 0x8E000
+    call kpanic_exception
     jmp $
 
 isr_ignore_stub:
@@ -242,6 +246,7 @@ isr_ignore_stub:
 
 global isr80
 extern syscall_handler
+extern kpanic_exception
 
 isr80:
     cli

@@ -19,6 +19,9 @@ typedef struct {
     unsigned char func;
     unsigned char irq_line;
     unsigned char mac[6];
+    unsigned char local_ip[4];
+    unsigned char gateway_ip[4];
+    unsigned char dns_ip[4];
 } NetDriverInfo;
 
 void net_init(void);

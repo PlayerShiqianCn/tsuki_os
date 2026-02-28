@@ -32,6 +32,12 @@ start:
     int 0x13
     jc disk_error        ; 如果 CF=1 则跳转报错
 
+    mov ah, 0x42
+    mov dl, 0x80
+    mov si, disk_packet_2
+    int 0x13
+    jc disk_error
+
     ; 3. 关中断
     cli
 
@@ -59,12 +65,21 @@ align 4
 disk_packet:
     db 0x10
     db 0
-    dw 60         ; 读取 60 个扇区 (30KB)，避免超过实模式 64KB 段限制
+    dw 127        ; 第一段：0x10000 -> 0x1FE00
     dw 0x0000     ; 偏移 (Offset) = 0
     dw 0x1000     ; 段 (Segment)  = 0x1000
     ; 物理地址 = 0x1000 * 16 + 0x0000 = 0x10000 (64KB)
     
     dd 1          ; 起始 LBA
+    dd 0
+
+disk_packet_2:
+    db 0x10
+    db 0
+    dw 127        ; 第二段：0x1FE00 -> 0x2FC00，总计可载入约 127KB 内核
+    dw 0x0000
+    dw 0x1FE0
+    dd 128
     dd 0
 ; --- 32位 保护模式入口 ---
 [BITS 32]
@@ -77,7 +92,7 @@ init_pm:
     mov fs, ax
     mov gs, ax
     
-    mov ebp, 0x90000 ; 设置栈顶
+    mov ebp, 0x9F000 ; 设置栈顶，保持在 VGA 显存(0xA0000)下方
     mov esp, ebp
     
     ; 调试：在 Mode 13h 显存显示一个白块，确认进入了保护模式

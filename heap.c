@@ -1,5 +1,15 @@
 #include "heap.h"
 
+static inline unsigned int irq_save_disable(void) {
+    unsigned int flags;
+    __asm__ volatile ("pushf; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void irq_restore(unsigned int flags) {
+    __asm__ volatile ("push %0; popf" :: "r"(flags) : "memory", "cc");
+}
+
 // 堆的头指针
 HeapBlock* head = (HeapBlock*)HEAP_START_ADDR;
 
@@ -12,12 +22,15 @@ void heap_init() {
 
 void* malloc(unsigned int size) {
     HeapBlock* curr = head;
+    unsigned int flags;
     
     // 简单的 4字节对齐
     unsigned int aligned_size = size;
     if (aligned_size % 4 != 0) {
         aligned_size += 4 - (aligned_size % 4);
     }
+
+    flags = irq_save_disable();
 
     // 遍历链表寻找合适的空闲块
     while (curr) {
@@ -38,15 +51,20 @@ void* malloc(unsigned int size) {
             
             curr->is_free = 0;
             // 返回数据区的指针 (跳过头结构)
+            irq_restore(flags);
             return (void*)((char*)curr + sizeof(HeapBlock));
         }
         curr = curr->next;
     }
+    irq_restore(flags);
     return 0; // OOM (Out Of Memory)
 }
 
 void free(void* ptr) {
+    unsigned int flags;
     if (!ptr) return;
+
+    flags = irq_save_disable();
     
     // 根据数据指针反推回头部指针
     HeapBlock* block = (HeapBlock*)((char*)ptr - sizeof(HeapBlock));
@@ -68,4 +86,5 @@ void free(void* ptr) {
         }
         curr = curr->next;
     }
+    irq_restore(flags);
 }

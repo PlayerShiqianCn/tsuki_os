@@ -16,6 +16,21 @@
 #define SYS_WIN_GET_EVENT   11
 #define SYS_FS_LIST         12
 #define SYS_LAUNCH_TSK      13
+#define SYS_GET_MOUSE_EVENT 14
+#define SYS_ADD_START_TILE  15
+#define SYS_GET_START_TILES 16
+#define SYS_REMOVE_START_TILE 17
+#define SYS_WRITE_FILE      18
+#define SYS_DRAW_RECT_RGB   19
+#define SYS_NET_INFO        20
+#define SYS_NET_PING        21
+#define SYS_NET_DNS_QUERY   22
+#define SYS_NET_HTTP_GET    23
+#define SYS_NET_SET_LOCAL_IP 24
+#define SYS_NET_SET_GATEWAY 25
+#define SYS_NET_SET_DNS     26
+#define SYS_SET_WALLPAPER_STYLE 27
+#define SYS_SET_START_PAGE_ENABLED 28
 
 // 窗口事件位
 #define WIN_EVENT_FOCUS_CHANGED 0x1

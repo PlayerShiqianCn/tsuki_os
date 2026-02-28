@@ -9,11 +9,83 @@ static int next_pid = 0;
 
 // 定义初始栈的大小
 #define STACK_SIZE 4096
+#define MAX_PROCESSES 32
+
+static Process process_pool[MAX_PROCESSES];
+static unsigned char process_used[MAX_PROCESSES];
+static unsigned char process_stacks[MAX_PROCESSES][STACK_SIZE];
+
+static Process* alloc_process_slot(void) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (!process_used[i]) {
+            process_used[i] = 1;
+            memset(&process_pool[i], 0, sizeof(Process));
+            return &process_pool[i];
+        }
+    }
+    return 0;
+}
+
+static void unlink_process(Process* proc) {
+    Process* prev = 0;
+    Process* p = process_list;
+
+    if (!proc) return;
+
+    while (p) {
+        if (p == proc) {
+            if (prev) prev->next = p->next;
+            else process_list = p->next;
+            return;
+        }
+        prev = p;
+        p = p->next;
+    }
+}
+
+static void free_process_slot(Process* proc) {
+    if (!proc) return;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (&process_pool[i] == proc) {
+            process_used[i] = 0;
+            return;
+        }
+    }
+}
+
+static void reap_dead_processes(void) {
+    Process* prev = 0;
+    Process* p = process_list;
+
+    while (p) {
+        if (p != current_process && p->state == PROCESS_DEAD) {
+            Process* dead = p;
+            if (prev) prev->next = p->next;
+            else process_list = p->next;
+            p = p->next;
+            free_process_slot(dead);
+            continue;
+        }
+        prev = p;
+        p = p->next;
+    }
+}
+
+static unsigned int stack_base_for(Process* proc) {
+    if (!proc) return 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (&process_pool[i] == proc) {
+            return (unsigned int)&process_stacks[i][0];
+        }
+    }
+    return 0;
+}
 
 void process_init() {
     // 创建内核闲置进程 (PID 0)
     // 它代表了 kernel.c 中的 main 循环
-    Process* kernel_proc = (Process*)malloc(sizeof(Process));
+    Process* kernel_proc = alloc_process_slot();
+    if (!kernel_proc) return;
     kernel_proc->pid = next_pid++;
     strcpy(kernel_proc->name, "kernel");
     kernel_proc->state = PROCESS_RUNNING;
@@ -30,8 +102,9 @@ void process_init() {
     // console_write("Process system initialized.\n");
 }
 
-void process_create(void (*entry_point)(), const char* name, Window* win) {
-    Process* new_proc = (Process*)malloc(sizeof(Process));
+int process_create(void (*entry_point)(), const char* name, Window* win) {
+    Process* new_proc = alloc_process_slot();
+    if (!new_proc) return 0;
     new_proc->pid = next_pid++;
     if (name) {
         int i = 0;
@@ -43,10 +116,17 @@ void process_create(void (*entry_point)(), const char* name, Window* win) {
     new_proc->state = PROCESS_READY;
     new_proc->sandbox_level = 0;
     new_proc->focus_state_cache = -1;
+    new_proc->mouse_click_x = 0;
+    new_proc->mouse_click_y = 0;
+    new_proc->has_mouse_event = 0;
     new_proc->win = win;
     
     // 分配栈空间
-    unsigned int stack = (unsigned int)malloc(STACK_SIZE);
+    unsigned int stack = stack_base_for(new_proc);
+    if (!stack) {
+        free_process_slot(new_proc);
+        return 0;
+    }
     new_proc->stack_base = stack;
     
     // 初始化栈内容，模拟中断现场
@@ -84,6 +164,7 @@ void process_create(void (*entry_point)(), const char* name, Window* win) {
     // console_write("Created process: ");
     // console_write((char*)name);
     // console_write("\n");
+    return 1;
 }
 
 void process_exit() {
@@ -97,10 +178,14 @@ void process_exit() {
         current_process->win = 0;
     }
 
+    unlink_process(current_process);
+
     current_process->state = PROCESS_DEAD;
 
     // 不能返回到用户代码；_start 没有“exit 返回后”的安全路径。
     // 这里显式开中断并等待时钟中断把当前 DEAD 进程切走。
+    // 注意：不能在这里立刻回收槽位，否则下一次 process_create 可能复用同一块
+    // PCB/调度栈，而当前代码还在这块栈上运行，会把新进程现场踩坏。
     while (1) {
         __asm__ volatile("sti; hlt");
     }
@@ -145,10 +230,14 @@ int process_has_live_user_process(void) {
 
 // 调度器：Round Robin
 unsigned int process_schedule(unsigned int current_esp) {
+    Process* prev_process;
     if (!current_process) return current_esp;
+
+    prev_process = current_process;
 
     // 1. 保存当前进程的 ESP
     current_process->esp = current_esp;
+    reap_dead_processes();
 
     // 2. 选择下一个 READY 的进程
     Process* next = current_process->next;
@@ -178,6 +267,11 @@ unsigned int process_schedule(unsigned int current_esp) {
         current_process = next;
         // 绑定当前窗口上下文 (用于 syscall)
         // 现在 syscall.c 中没有全局变量了，直接通过 current_process->win 获取
+    }
+
+    reap_dead_processes();
+    if (prev_process != current_process && prev_process->state == PROCESS_DEAD) {
+        free_process_slot(prev_process);
     }
 
     return current_process->esp;

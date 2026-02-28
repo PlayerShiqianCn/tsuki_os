@@ -12,10 +12,27 @@
 #define ATA_COMMAND     0x1F7
 
 #define ATA_CMD_READ    0x20
+#define ATA_CMD_WRITE   0x30
+#define ATA_CMD_FLUSH   0xE7
 
 // 汇编辅助：从端口读入 count 个 word (2字节)
 static inline void insw(unsigned short port, void* addr, unsigned int count) {
     __asm__ volatile ("cld; rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+// 汇编辅助：向端口写出 count 个 word (2字节)
+static inline void outsw(unsigned short port, const void* addr, unsigned int count) {
+    __asm__ volatile ("cld; rep outsw" : "+S"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+static inline unsigned int irq_save_disable(void) {
+    unsigned int flags;
+    __asm__ volatile ("pushf; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void irq_restore(unsigned int flags) {
+    __asm__ volatile ("push %0; popf" :: "r"(flags) : "memory", "cc");
 }
 
 void disk_init() {
@@ -32,11 +49,24 @@ void disk_wait() {
     }
 }
 
+static void disk_wait_not_busy() {
+    while (1) {
+        unsigned char status = inb(ATA_STATUS);
+        if ((status & 0x80) == 0) break;
+        if (status & 0x01) break;
+    }
+}
+
 void disk_read_sectors(int lba, int count, void* buffer) {
+    unsigned int flags;
+
     // 【防崩溃检查】: 如果 buffer 是 NULL，绝对不能读，否则覆盖 IVT (0x00) 导致黑屏
     if (buffer == 0) {
         return;
     }
+
+    flags = irq_save_disable();
+    disk_wait_not_busy();
 
     outb(ATA_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F)); // 0xE0 = Master Drive, LBA Mode
     outb(ATA_SECTOR_CNT, (unsigned char)count);
@@ -53,4 +83,38 @@ void disk_read_sectors(int lba, int count, void* buffer) {
         insw(ATA_DATA, ptr, 256);
         ptr += 256;
     }
+
+    disk_wait_not_busy();
+    irq_restore(flags);
+}
+
+void disk_write_sectors(int lba, int count, const void* buffer) {
+    const unsigned short* ptr = (const unsigned short*)buffer;
+    unsigned int flags;
+
+    if (!buffer || count <= 0) {
+        return;
+    }
+
+    flags = irq_save_disable();
+    disk_wait_not_busy();
+
+    outb(ATA_DRIVE_HEAD, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(ATA_SECTOR_CNT, (unsigned char)count);
+    outb(ATA_LBA_LO, (unsigned char)(lba & 0xFF));
+    outb(ATA_LBA_MID, (unsigned char)((lba >> 8) & 0xFF));
+    outb(ATA_LBA_HI, (unsigned char)((lba >> 16) & 0xFF));
+    outb(ATA_COMMAND, ATA_CMD_WRITE);
+
+    for (int i = 0; i < count; i++) {
+        disk_wait();
+        outsw(ATA_DATA, ptr, 256);
+        ptr += 256;
+        disk_wait_not_busy();
+    }
+
+    disk_wait_not_busy();
+    outb(ATA_COMMAND, ATA_CMD_FLUSH);
+    disk_wait_not_busy();
+    irq_restore(flags);
 }
