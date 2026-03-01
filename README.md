@@ -13,7 +13,17 @@
 - **磁盘I/O**：支持从磁盘读取和写入
 - **定时器**：实现了系统定时器用于进程调度
 
-## 近期更新（2026-02-28）
+## 更新记录
+
+### 2026-03-01
+
+- **目录结构整理**：整理了下这奇葩代码 还有奇葩编译产物 都有了自己的家
+- **任务加载器升级**：`.tsk` 默认使用 `TSK2` 头部加载
+- **调度器增强**：加入阻塞睡眠、定时唤醒、时间片字段，并为坏掉的保存现场增加保护，避免直接跳入垃圾地址
+- **内存布局统一**：新增 `include/mp.h`，统一管理内核保留区、视频后缓冲、日志区、应用槽位和窗口缓冲地址
+- **内核模块拆分**：从 `kernel/kernel.c` 中拆出 `kernel/config.c` 和 `kernel/desktop.c` 妈妈在也不用担心内核有奇奇怪怪的奇葩代码了
+
+### 2026-02-28
 
 - **显示系统升级**：从纯 VGA 输出切到 QEMU `stdvga` 的 32 位 VBE 线性帧缓冲，支持 `640x480`、`800x600`、`1024x768` 实时切换
 - **动态缩放与减闪烁**：保留 `320x200` 逻辑坐标，但输出会自动缩放到当前物理分辨率；重绘改为脏刷新，减少整屏闪烁
@@ -30,73 +40,40 @@
 
 ## 项目结构
 
-### 核心模块
+### 目录分层
+
+| 路径 | 功能说明 |
+|------|---------|
+| `boot/` | 启动引导、内核入口、任务入口汇编，以及链接脚本 |
+| `kernel/` | 内核核心逻辑：主循环、中断、调度、系统调用、堆、日志 |
+| `drivers/` | 设备与平台驱动：PS/2、VBE 显示、窗口、磁盘、PCI、网络、音频 |
+| `fs/` | 文件系统实现 |
+| `apps/` | 用户任务源码：终端、开始页、窗口管理器、图片、设置等 |
+| `userspace/` | 用户态通用库：系统调用封装、UI、JPEG 解码 |
+| `include/` | 共享头文件 |
+| `tools/` | 构建辅助工具：`mkfs`、`make_tsk`、资源转换脚本 |
+
+### 关键文件
 
 | 文件 | 功能说明 |
 |------|---------|
-| `kernel.c` | 内核主程序，包含任务栏、开始菜单等GUI逻辑 |
-| `kernel_entry.asm` | 内核入口点（汇编） |
-| `boot.asm` | 启动引导程序（汇编） |
-| `app_entry.asm` | 应用程序入口点（汇编） |
-
-### 内存管理
-
-| 文件 | 功能说明 |
-|------|---------|
-| `heap.c / heap.h` | 堆内存管理，实现malloc/free功能 |
-
-### 进程管理
-
-| 文件 | 功能说明 |
-|------|---------|
-| `process.c / process.h` | 进程控制、进程调度 |
-| `syscall.c / syscall.h` | 系统调用接口 |
-
-### 图形和窗口系统
-
-| 文件 | 功能说明 |
-|------|---------|
-| `video.c / video.h` | 显卡初始化和像素绘制 |
-| `window.c / window.h` | 窗口管理和绘制 |
-| `console.c / console.h` | 控制台输出 |
-
-### 输入设备
-
-| 文件 | 功能说明 |
-|------|---------|
-| `ps2.c / ps2.h` | PS/2设备驱动（键盘和鼠标） |
-
-### 文件系统与存储
-
-| 文件 | 功能说明 |
-|------|---------|
-| `fs.c / fs.h` | 文件系统实现（ext2格式） |
-| `disk.c / disk.h` | 磁盘I/O操作 |
-| `mkfs.c` | 文件系统创建工具 |
-
-### 其他模块
-
-| 文件 | 功能说明 |
-|------|---------|
-| `idt.c / idt.h` | 中断描述符表设置 |
-| `timer.c` | 系统定时器 |
-| `pci.c / pci.h` | PCI设备扫描和管理 |
-| `audio.c / audio.h` | 音频设备驱动 |
-| `net.c / net.h` | 网络模块 |
-| `utils.c / utils.h` | 工具函数库 |
-| `lib.c / lib.h` | 应用程序库 |
-| `app.c` | 示例应用程序 |
-| `image_tsk.c` | JPEG 图片查看器应用 |
-| `settings_tsk.c` | 系统设置应用 |
-| `jpeg.c / jpeg.h` | JPEG 解析与解码库 |
-| `font8x8_basic.h` | 8x8像素字体 |
-
-### 链接和配置
-
-| 文件 | 功能说明 |
-|------|---------|
-| `link.ld` | 链接脚本，定义内存布局 |
-| `Makefile` | 项目构建脚本 |
+| `boot/boot.asm` | 启动引导程序（汇编） |
+| `boot/kernel_entry.asm` | 内核入口点（汇编） |
+| `boot/link.ld` | 链接脚本，定义内核内存布局 |
+| `kernel/kernel.c` | 内核主程序，包含桌面与会话主循环 |
+| `kernel/process.c` / `include/process.h` | 进程控制、调度与睡眠/唤醒 |
+| `kernel/syscall.c` / `include/syscall.h` | 系统调用接口 |
+| `drivers/video.c` / `include/video.h` | 显卡初始化和像素绘制 |
+| `drivers/window.c` / `include/window.h` | 窗口管理和绘制 |
+| `fs/fs.c` / `include/fs.h` | 文件系统实现 |
+| `tools/mkfs.c` | 镜像文件系统创建工具 |
+| `tools/make_tsk.c` | `.tsk` 打包器（生成带 TSK2 头的任务镜像） |
+| `apps/app.c` | 示例应用程序 |
+| `apps/image_tsk.c` | JPEG 图片查看器应用 |
+| `apps/settings_tsk.c` | 系统设置应用 |
+| `userspace/lib.c` / `include/lib.h` | 应用程序库 |
+| `userspace/jpeg.c` / `include/jpeg.h` | JPEG 解析与解码库 |
+| `include/font8x8_basic.h` | 8x8 像素字体 |
 
 ## 关键数据结构
 
@@ -159,14 +136,12 @@ make clean
 
 ### 生成的文件
 
-- `boot.bin` - 启动扇区（512字节）
-- `kernel.bin` - 内核二进制
-- `kernel.elf` - 内核ELF文件
-- `app.tsk` - 应用程序任务文件
-- `terminal.tsk` - 终端应用
-- `image.tsk` - 图片查看器
-- `settings.tsk` - 设置应用
-- `os-image.img` - 完整OS镜像（10MB）
+- `build/boot.bin` - 启动扇区（512字节）
+- `build/kernel.bin` - 内核二进制
+- `build/kernel.elf` - 内核 ELF 文件
+- `build/*.tsk` - 应用程序任务文件
+- `build/os-image.img` - 完整 OS 镜像（10MB）
+- `build/qemu.log` - `make run` 时的中断/异常日志
 
 ## 内存布局
 
@@ -262,4 +237,4 @@ make clean
 
 ---
 
-**最后更新**: 2026年2月
+**最后更新**: 2026年3月
