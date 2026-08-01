@@ -31,6 +31,8 @@
 #define SYS_NET_SET_DNS     26
 #define SYS_SET_WALLPAPER_STYLE 27
 #define SYS_SET_START_PAGE_ENABLED 28
+#define SYS_GET_TICKS 29
+#define SYS_TLX         30
 
 // 窗口事件位
 #define WIN_EVENT_FOCUS_CHANGED 0x1

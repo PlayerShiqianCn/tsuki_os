@@ -2,6 +2,7 @@
 #include "mp.h"
 #include "video.h"
 #include "utils.h"
+#include "disk.h"
 
 #define KLOG_MAX_LINES 24
 #define KLOG_LINE_LEN  40
@@ -13,6 +14,32 @@ typedef struct {
     int panic_active;
     char lines[KLOG_MAX_LINES][KLOG_LINE_LEN + 1];
 } KlogState;
+
+static void serial_init(void) {
+    outb(0x3F8 + 1, 0x00);
+    outb(0x3F8 + 3, 0x80);
+    outb(0x3F8 + 0, 0x03);
+    outb(0x3F8 + 1, 0x00);
+    outb(0x3F8 + 3, 0x03);
+    outb(0x3F8 + 2, 0xC7);
+    outb(0x3F8 + 4, 0x0B);
+}
+
+static void serial_write_char(char ch) {
+    if (ch == 10) serial_write_char(13);
+    while ((inb(0x3F8 + 5) & 0x20) == 0) { }
+    outb(0x3F8, (unsigned char)ch);
+}
+
+static void serial_write(const char* s) {
+    if (!s) return;
+    for (int i = 0; s[i]; i++) serial_write_char(s[i]);
+}
+
+static void serial_write_line(const char* s) {
+    serial_write(s);
+    serial_write_char(10);
+}
 
 static KlogState* klog_state(void) {
     return (KlogState*)MP_KLOG_BASE;
@@ -94,6 +121,7 @@ static void render_panic_screen(const char* msg) {
 }
 
 void klog_init(void) {
+    serial_init();
     KlogState* state = klog_state();
     memset(state, 0, sizeof(KlogState));
     state->magic = KLOG_MAGIC;
@@ -101,6 +129,8 @@ void klog_init(void) {
 
 void klog_write(const char* msg) {
     push_line(msg);
+
+    serial_write_line(msg);
 }
 
 void klog_write_pair(const char* prefix, const char* value) {
@@ -109,6 +139,7 @@ void klog_write_pair(const char* prefix, const char* value) {
     if (prefix) append_line(line, prefix);
     if (value) append_line(line, value);
     push_line(line);
+    serial_write_line(line);
 }
 
 int kpanic_is_active(void) {
@@ -124,6 +155,8 @@ void kpanic(const char* msg) {
         push_line("panic");
         if (msg) push_line(msg);
         render_panic_screen(msg);
+        serial_write("KERNEL PANIC: ");
+        serial_write_line(msg ? msg : "panic");
     }
 
     while (1) {

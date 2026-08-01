@@ -13,6 +13,7 @@ __asm__(".code32");
 #include "process.h"
 #include "klog.h"
 #include "net.h"
+#include "console.h"
 
 // 声明外部函数
 extern void init_timer(int freq);
@@ -89,6 +90,9 @@ void main() {
     __asm__ volatile("sti");
 
     video_request_redraw();
+
+
+    console_launch_tsk("system/image.tsk");
 
     // PID 0 (内核/GUI 线程) 的主循环
     while(1) {

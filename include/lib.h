@@ -2,11 +2,13 @@
 #define LIB_H
 
 #include "syscall.h"
+#include "tlx.h"
 
 // API 声明
 void exit();
 void print(const char* str);
 void sleep(int ticks);
+unsigned int get_ticks(void);
 int read_file(const char* filename, void* buffer);
 int write_file(const char* filename, const void* buffer, int size);
 void draw_rect(int x, int y, int w, int h, int color);

@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "console.h"
 #include "klog.h"
+#include "tlx_kernel.h"
 
 Process* current_process = 0;
 static Process* process_list = 0;
@@ -166,6 +167,7 @@ void process_init() {
     Process* kernel_proc = alloc_process_slot();
     if (!kernel_proc) return;
     kernel_proc->pid = next_pid++;
+    kernel_proc->parent_pid = -1;
     strcpy(kernel_proc->name, "kernel");
     kernel_proc->state = PROCESS_RUNNING;
     kernel_proc->stack_base = 0; // 内核栈不需要我们释放
@@ -179,6 +181,7 @@ void process_init() {
     reset_time_slice(kernel_proc);
     kernel_proc->win = 0;
     kernel_proc->next = 0;
+    tlx_process_init(kernel_proc);
 
     process_list = kernel_proc;
     current_process = kernel_proc;
@@ -191,6 +194,7 @@ int process_create(void (*entry_point)(), const char* name, Window* win,
     Process* new_proc = alloc_process_slot();
     if (!new_proc) return 0;
     new_proc->pid = next_pid++;
+    new_proc->parent_pid = current_process ? current_process->pid : 0;
     if (name) {
         int i = 0;
         for (; i < 31 && name[i]; i++) new_proc->name[i] = name[i];
@@ -210,10 +214,12 @@ int process_create(void (*entry_point)(), const char* name, Window* win,
     new_proc->mouse_click_y = 0;
     new_proc->has_mouse_event = 0;
     new_proc->win = win;
+    tlx_process_init(new_proc);
     
     // 分配栈空间
     unsigned int stack = stack_base_for(new_proc);
     if (!stack) {
+        tlx_process_release(new_proc);
         free_process_slot(new_proc);
         return 0;
     }
@@ -262,6 +268,8 @@ void process_exit() {
     // 这里我们简单地把状态设为 DEAD，调度器会跳过它
     // 实际 OS 需要回收资源
     if (current_process->pid == 0) return; // 内核进程不能退出
+
+    tlx_process_release(current_process);
 
     if (current_process->win) {
         win_destroy(current_process->win);

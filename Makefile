@@ -1,6 +1,11 @@
 # Makefile
 
-CFLAGS = -m32 -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g -Iinclude
+CROSS ?= $(shell if command -v i686-linux-gnu-gcc >/dev/null 2>&1; then echo i686-linux-gnu-; fi)
+
+CFLAGS = -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g -Iinclude
+ifeq ($(CROSS),)
+  CFLAGS += -m32
+endif
 KERNEL_LDFLAGS = -m elf_i386 -T boot/link.ld
 BUILD_DIR = build
 MP_HEADER = include/mp.h
@@ -21,7 +26,6 @@ HELLO_TXT = $(BUILD_DIR)/hello.txt
 VERSION_FILE = $(BUILD_DIR)/version.txt
 START_REG = $(BUILD_DIR)/start.rtsk
 CONFIG_REG = $(BUILD_DIR)/config.rtsk
-TSK_GIRL_SOF0 = $(BUILD_DIR)/tsk_girl_sof0.jpg
 OS_IMAGE = $(BUILD_DIR)/os-image.img
 QEMU_LOG = $(BUILD_DIR)/qemu.log
 
@@ -51,6 +55,7 @@ KERNEL_C_SRCS = \
 	fs/fs.c \
 	kernel/timer.c \
 	kernel/syscall.c \
+	kernel/tlx.c \
 	kernel/process.c \
 	kernel/klog.c \
 	drivers/pci.c \
@@ -73,7 +78,7 @@ SETTINGS_TSK_ELF = $(BUILD_DIR)/settings.tsk.elf
 SETTINGS_TSK = $(BUILD_DIR)/settings.tsk
 TSK_APPS = $(APP_TSK) $(TERMINAL_TSK) $(WM_TSK) $(START_TSK) $(IMAGE_TSK) $(SETTINGS_TSK)
 
-.PHONY: all run clean FORCE
+.PHONY: all run clean debug FORCE
 
 all: $(OS_IMAGE)
 
@@ -81,7 +86,7 @@ FORCE:
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	gcc $(CFLAGS) -c $< -o $@
+	$(CROSS)gcc $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/boot/%.o: boot/%.asm
 	@mkdir -p $(dir $@)
@@ -93,8 +98,8 @@ $(BOOT_BIN): boot/boot.asm
 
 $(KERNEL_BIN): $(KERNEL_OBJS) boot/link.ld
 	@mkdir -p $(dir $@)
-	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $(KERNEL_ELF)
-	ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $(KERNEL_BIN) --oformat binary
+	$(CROSS)ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $(KERNEL_ELF)
+	$(CROSS)ld $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $(KERNEL_BIN) --oformat binary
 
 $(MKFS): tools/mkfs.c
 	@mkdir -p $(dir $@)
@@ -114,49 +119,46 @@ $(JPEG_TSO): $(BUILD_DIR)/userspace/jpeg.o
 
 $(APP_TSK_ELF): $(BUILD_DIR)/apps/app.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(APP_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(APP_TSK_ADDR) -o $@ $^
 
 $(APP_TSK): $(APP_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
 $(TERMINAL_TSK_ELF): $(BUILD_DIR)/apps/terminal_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(TERMINAL_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(TERMINAL_TSK_ADDR) -o $@ $^
 
 $(TERMINAL_TSK): $(TERMINAL_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
 $(WM_TSK_ELF): $(BUILD_DIR)/apps/wm_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(WM_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(WM_TSK_ADDR) -o $@ $^
 
 $(WM_TSK): $(WM_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
 $(START_TSK_ELF): $(BUILD_DIR)/apps/start_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(START_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(START_TSK_ADDR) -o $@ $^
 
 $(START_TSK): $(START_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
 $(IMAGE_TSK_ELF): $(BUILD_DIR)/boot/image_entry.o $(BUILD_DIR)/apps/image_tsk.o $(BUILD_DIR)/userspace/jpeg.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(IMAGE_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(IMAGE_TSK_ADDR) -o $@ $^
 
 $(IMAGE_TSK): $(IMAGE_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
 $(SETTINGS_TSK_ELF): $(BUILD_DIR)/boot/settings_entry.o $(BUILD_DIR)/apps/settings_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
-	ld -m elf_i386 -N -e _start -Ttext $(SETTINGS_TSK_ADDR) -o $@ $^
+	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(SETTINGS_TSK_ADDR) -o $@ $^
 
 $(SETTINGS_TSK): $(SETTINGS_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(TSK_GIRL_SOF0): tsk_girl.jpg
-	@mkdir -p $(dir $@)
-	python3 -c "from PIL import Image; img = Image.open('tsk_girl.jpg').convert('RGB'); img.save('$(TSK_GIRL_SOF0)', format='JPEG', progressive=False, quality=85)"
 
 $(VERSION_FILE): FORCE
 	@mkdir -p $(dir $@)
@@ -171,6 +173,7 @@ $(START_REG): FORCE
 	@mkdir -p $(dir $@)
 	@printf "# title|file|color\n" > $@
 	@printf "Settings|settings.tsk|9\n" >> $@
+	@printf "Image|image.tsk|14\n" >> $@
 
 $(CONFIG_REG): FORCE
 	@mkdir -p $(dir $@)
@@ -183,7 +186,7 @@ $(CONFIG_REG): FORCE
 	@printf "gateway=10.0.2.2\n" >> $@
 	@printf "dns=10.0.2.3\n" >> $@
 
-$(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO) $(VERSION_FILE) $(START_REG) $(CONFIG_REG) tsk_girl.jpg $(TSK_GIRL_SOF0)
+$(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO) $(VERSION_FILE) $(START_REG) $(CONFIG_REG) tsk_girl.jpg
 	@mkdir -p $(dir $@)
 	echo "Hello MultiTasking!" > $(HELLO_TXT)
 	rm -rf $(FS_ROOT)
@@ -194,17 +197,21 @@ $(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO
 	cp -f $(HELLO_TXT) $(FS_ROOT)/system/hello.txt._hid_
 	cp -f $(WM_TSK) $(FS_ROOT)/system/wm.tsk._hid_
 	cp -f $(START_TSK) $(FS_ROOT)/system/start.tsk._hid_
+	cp -f $(IMAGE_TSK) $(FS_ROOT)/system/image.tsk._hid_
 	cp -f $(LIB_TSO) $(FS_ROOT)/system/lib.tso
 	cp -f $(JPEG_TSO) $(FS_ROOT)/system/jpeg.tso
 	cp -f tsk_girl.jpg $(FS_ROOT)/image/tsk_girl.jpg
-	cp -f $(TSK_GIRL_SOF0) $(FS_ROOT)/image/tsk_girl_sof0.jpg
-	$(MKFS) $(OS_IMAGE) $(BOOT_BIN) $(KERNEL_BIN) $(APP_TSK) $(TERMINAL_TSK) $(IMAGE_TSK) $(SETTINGS_TSK) $(FS_ROOT)/system/version.txt $(FS_ROOT)/system/start.rtsk $(FS_ROOT)/system/config.rtsk $(FS_ROOT)/system/hello.txt._hid_ $(FS_ROOT)/system/wm.tsk._hid_ $(FS_ROOT)/system/start.tsk._hid_ $(FS_ROOT)/system/lib.tso $(FS_ROOT)/system/jpeg.tso $(FS_ROOT)/image/tsk_girl.jpg $(FS_ROOT)/image/tsk_girl_sof0.jpg
+
+	$(MKFS) $(OS_IMAGE) $(BOOT_BIN) $(KERNEL_BIN) $(APP_TSK) $(TERMINAL_TSK) $(IMAGE_TSK) $(SETTINGS_TSK) $(FS_ROOT)/system/version.txt $(FS_ROOT)/system/start.rtsk $(FS_ROOT)/system/config.rtsk $(FS_ROOT)/system/hello.txt._hid_ $(FS_ROOT)/system/wm.tsk._hid_ $(FS_ROOT)/system/start.tsk._hid_ $(FS_ROOT)/system/lib.tso $(FS_ROOT)/system/jpeg.tso $(FS_ROOT)/system/image.tsk._hid_ $(FS_ROOT)/image/tsk_girl.jpg 
 	truncate -s 10M $(OS_IMAGE)
 
 run: $(OS_IMAGE)
 	qemu-system-i386 -vga std -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)
 
 clean:
-	rm -f *.o *.bin *.img *.elf *.tsk *.tsk.elf *.tsk._hid_ *.txt._hid_ *.tso version.txt start.rtsk config.rtsk hello.txt .build_version tsk_girl.png tsk_girl.jrgb._hid_ tsk_girl.jr32._hid_ tsk_girl_sof0.jpg baseline_test.jpg baseline_test.rgb qemu.log qemu_vbe_test.log
+	rm -f *.o *.bin *.img *.elf *.tsk *.tsk.elf *.tsk._hid_ *.txt._hid_ *.tso version.txt start.rtsk config.rtsk hello.txt .build_version tsk_girl.png tsk_girl.jrgb._hid_ tsk_girl.jr32._hid_ baseline_test.jpg baseline_test.rgb qemu.log qemu_vbe_test.log
 	rm -f boot/*.o kernel/*.o drivers/*.o fs/*.o apps/*.o userspace/*.o
 	rm -rf $(BUILD_DIR) .fsroot
+
+debug: $(OS_IMAGE)
+	qemu-system-i386 -vga std -serial stdio -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)

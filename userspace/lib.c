@@ -43,6 +43,10 @@ void sleep(int ticks) {
     _syscall3(SYS_SLEEP, ticks, 0, 0);
 }
 
+unsigned int get_ticks(void) {
+    return (unsigned int)_syscall3(SYS_GET_TICKS, 0, 0, 0);
+}
+
 int read_file(const char* filename, void* buffer) {
     return _syscall3(SYS_READ_FILE, (int)filename, (int)buffer, 0);
 }
@@ -160,4 +164,72 @@ int set_wallpaper_style(int style) {
 
 int set_start_page_enabled(int enabled) {
     return _syscall3(SYS_SET_START_PAGE_ENABLED, enabled, 0, 0);
+}
+
+static inline int _tlx_call(int op, int arg1, int arg2, int arg3, int arg4) {
+    return _syscall5(SYS_TLX, op, arg1, arg2, arg3, arg4);
+}
+
+int tlx_open(const char* path, unsigned int flags) {
+    return _tlx_call(TLX_OP_OPEN, (int)path, (int)flags, 0, 0);
+}
+
+int tlx_close(int handle) {
+    return _tlx_call(TLX_OP_CLOSE, handle, 0, 0, 0);
+}
+
+int tlx_read(int handle, void* buffer, unsigned int size) {
+    return _tlx_call(TLX_OP_READ, handle, (int)buffer, (int)size, 0);
+}
+
+int tlx_write(int handle, const void* buffer, unsigned int size) {
+    return _tlx_call(TLX_OP_WRITE, handle, (int)buffer, (int)size, 0);
+}
+
+int tlx_seek(int handle, int offset, int whence) {
+    return _tlx_call(TLX_OP_SEEK, handle, offset, whence, 0);
+}
+
+int tlx_fstat(int handle, TlxFileInfo* info) {
+    return _tlx_call(TLX_OP_FSTAT, handle, (int)info, 0, 0);
+}
+
+int tlx_list(const char* path, char* buffer, unsigned int capacity) {
+    return _tlx_call(TLX_OP_LIST, (int)path, (int)buffer, (int)capacity, 0);
+}
+
+int tlx_getpid(void) {
+    return _tlx_call(TLX_OP_GETPID, 0, 0, 0, 0);
+}
+
+int tlx_getppid(void) {
+    return _tlx_call(TLX_OP_GETPPID, 0, 0, 0, 0);
+}
+
+int tlx_sleep(unsigned int ticks) {
+    return _tlx_call(TLX_OP_SLEEP, (int)ticks, 0, 0, 0);
+}
+
+int tlx_yield(void) {
+    return _tlx_call(TLX_OP_YIELD, 0, 0, 0, 0);
+}
+
+unsigned int tlx_clock(void) {
+    return (unsigned int)_tlx_call(TLX_OP_CLOCK, 0, 0, 0, 0);
+}
+
+int tlx_getcwd(char* buffer, unsigned int capacity) {
+    return _tlx_call(TLX_OP_GETCWD, (int)buffer, (int)capacity, 0, 0);
+}
+
+int tlx_chdir(const char* path) {
+    return _tlx_call(TLX_OP_CHDIR, (int)path, 0, 0, 0);
+}
+
+int tlx_spawn(const char* path) {
+    return _tlx_call(TLX_OP_SPAWN, (int)path, 0, 0, 0);
+}
+
+int tlx_identity(TlxIdentity* identity) {
+    return _tlx_call(TLX_OP_IDENTITY, (int)identity, 0, 0, 0);
 }

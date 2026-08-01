@@ -33,3 +33,7 @@ unsigned int timer_tick_and_schedule(unsigned int current_esp) {
     // 每个 tick 都调度，保证用户进程能够及时获得时间片
     return process_schedule(current_esp);
 }
+
+unsigned int timer_get_ticks(void) {
+    return tick;
+}
