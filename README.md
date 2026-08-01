@@ -1,240 +1,39 @@
-# Project Tsuki Os
+# Project Tsuki OS
 
-一个用C和x86汇编语言编写的32位操作系统内核，实现了基本的GUI界面、多进程调度、文件系统、内存管理等功能。（下面内容均为AI生成）（代码有70%为AI生成）
+## 系统要求
 
-## 项目特点
+- Linux/Unix 环境
+- `nasm`
+- `gcc`、`ld`，或可用的 `i686-linux-gnu-` 交叉工具链
+- `qemu-system-i386`
 
-- **GUI 窗口系统**：支持多窗口管理，具有窗口移动、拖拽、分层显示等功能
-- **多进程支持**：实现了简单的进程控制块(PCB)和进程调度机制
-- **动态内存管理**：实现了 `malloc` 和 `free`，支持堆内存的动态分配和回收
-- **文件系统**：基于 ext2 格式的简易文件系统实现
-- **PS/2输入设备**：支持键盘和鼠标输入
-- **中断处理**：实现了IDT（中断描述符表）和中断处理
-- **磁盘I/O**：支持从磁盘读取和写入
-- **定时器**：实现了系统定时器用于进程调度
+如果系统中存在 `i686-linux-gnu-gcc`，Makefile 会自动使用对应的交叉工具链；也可以手动指定：
 
-## 更新记录
-
-### 2026-03-01
-
-- **目录结构整理**：整理了下这奇葩代码 还有奇葩编译产物 都有了自己的家
-- **任务加载器升级**：`.tsk` 默认使用 `TSK2` 头部加载
-- **调度器增强**：加入阻塞睡眠、定时唤醒、时间片字段，并为坏掉的保存现场增加保护，避免直接跳入垃圾地址
-- **内存布局统一**：新增 `include/mp.h`，统一管理内核保留区、视频后缓冲、日志区、应用槽位和窗口缓冲地址
-- **内核模块拆分**：从 `kernel/kernel.c` 中拆出 `kernel/config.c` 和 `kernel/desktop.c` 妈妈在也不用担心内核有奇奇怪怪的奇葩代码了
-
-### 2026-02-28
-
-- **显示系统升级**：从纯 VGA 输出切到 QEMU `stdvga` 的 32 位 VBE 线性帧缓冲，支持 `640x480`、`800x600`、`1024x768` 实时切换
-- **动态缩放与减闪烁**：保留 `320x200` 逻辑坐标，但输出会自动缩放到当前物理分辨率；重绘改为脏刷新，减少整屏闪烁
-- **系统目录结构**：镜像内新增 `/system` 与 `/image`，系统配置、注册表、库文件和图片资源统一纳入目录管理
-- **配置系统**：新增 `/system/config.rtsk`，支持壁纸、开始页、网络参数、屏幕分辨率配置；写入后会立即热重载
-- **开始页注册表**：新增 `/system/start.rtsk`，用于持久化 Start 页面应用入口
-- **设置应用**：新增 `settings.tsk`，可直接修改配置并立即应用常用设置
-- **终端增强**：支持 `sudo`、隐藏文件后缀 `._hid_`、`cd`、当前路径提示符，以及 `ping` / `dns` / `http` 等命令
-- **图片查看器**：新增 `image.tsk`，支持从 `/image` 中选择图片并显示
-- **JPEG 解码库**：新增 `jpeg.tso`，已支持 `SOF0` baseline JPEG 和 `SOF2` progressive JPEG 真解码
-- **文件系统写入**：支持覆盖写已有文件，并用于持久化 `config.rtsk` 和 `start.rtsk`
-- **网络栈接通**：接入 `e1000` 网卡，支持基础 `ping`、DNS 查询和 HTTP GET
-- **启动加载修正**：bootloader 改为分段读取更大的 `kernel.bin`，避免内核增长后被截断
-
-## 项目结构
-
-### 目录分层
-
-| 路径 | 功能说明 |
-|------|---------|
-| `boot/` | 启动引导、内核入口、任务入口汇编，以及链接脚本 |
-| `kernel/` | 内核核心逻辑：主循环、中断、调度、系统调用、堆、日志 |
-| `drivers/` | 设备与平台驱动：PS/2、VBE 显示、窗口、磁盘、PCI、网络、音频 |
-| `fs/` | 文件系统实现 |
-| `apps/` | 用户任务源码：终端、开始页、窗口管理器、图片、设置等 |
-| `userspace/` | 用户态通用库：系统调用封装、UI、JPEG 解码 |
-| `include/` | 共享头文件 |
-| `tools/` | 构建辅助工具：`mkfs`、`make_tsk`、资源转换脚本 |
-
-### 关键文件
-
-| 文件 | 功能说明 |
-|------|---------|
-| `boot/boot.asm` | 启动引导程序（汇编） |
-| `boot/kernel_entry.asm` | 内核入口点（汇编） |
-| `boot/link.ld` | 链接脚本，定义内核内存布局 |
-| `kernel/kernel.c` | 内核主程序，包含桌面与会话主循环 |
-| `kernel/process.c` / `include/process.h` | 进程控制、调度与睡眠/唤醒 |
-| `kernel/syscall.c` / `include/syscall.h` | 系统调用接口 |
-| `drivers/video.c` / `include/video.h` | 显卡初始化和像素绘制 |
-| `drivers/window.c` / `include/window.h` | 窗口管理和绘制 |
-| `fs/fs.c` / `include/fs.h` | 文件系统实现 |
-| `tools/mkfs.c` | 镜像文件系统创建工具 |
-| `tools/make_tsk.c` | `.tsk` 打包器（生成带 TSK2 头的任务镜像） |
-| `apps/app.c` | 示例应用程序 |
-| `apps/image_tsk.c` | JPEG 图片查看器应用 |
-| `apps/settings_tsk.c` | 系统设置应用 |
-| `userspace/lib.c` / `include/lib.h` | 应用程序库 |
-| `userspace/jpeg.c` / `include/jpeg.h` | JPEG 解析与解码库 |
-| `include/font8x8_basic.h` | 8x8 像素字体 |
-
-## 关键数据结构
-
-### Window（窗口）
-```c
-typedef struct Window {
-    int id;                    // 窗口ID
-    int x, y, w, h;           // 位置和大小
-    char* title;              // 标题
-    int visible;              // 可见性
-    unsigned char bg_color;   // 背景颜色
-    unsigned char* back_buffer; // 后台缓冲区
-    void (*extra_draw)(struct Window*); // 自定义绘制函数
-} Window;
-```
-
-### Process（进程）
-```c
-typedef struct Process {
-    int pid;                   // 进程ID
-    unsigned int esp;          // 栈指针
-    unsigned int stack_base;   // 栈底
-    ProcessState state;        // 进程状态
-    Window* win;              // 关联窗口
-    struct Process* next;     // 下一个进程
-} Process;
-```
-
-### HeapBlock（堆块）
-```c
-typedef struct {
-    unsigned int size;  // 块大小
-    int is_free;       // 是否空闲
-    struct HeapBlock* next; // 下一块
-} HeapBlock;
+```bash
+make CROSS=i686-linux-gnu-
 ```
 
 ## 构建和运行
 
-### 系统要求
-
-- Linux/Unix 环境
-- `nasm` - x86汇编编译器
-- `gcc` - C编译器（32位支持）
-- `ld` - GNU链接器
-- `qemu-system-i386` - x86模拟器（用于运行OS）
-
-### 编译和运行
-
 ```bash
-# 编译并生成OS镜像
+# 编译并生成 OS 镜像
 make
 
-# 在QEMU中运行
+# 在 QEMU 中运行
 make run
 
-# 清理生成文件
+# 在终端显示 COM1 串口日志
+make debug
+
+# 清理构建产物
 make clean
 ```
 
-### 生成的文件
+构建完成后，主要产物位于 `build/`：
 
-- `build/boot.bin` - 启动扇区（512字节）
-- `build/kernel.bin` - 内核二进制
-- `build/kernel.elf` - 内核 ELF 文件
-- `build/*.tsk` - 应用程序任务文件
-- `build/os-image.img` - 完整 OS 镜像（10MB）
-- `build/qemu.log` - `make run` 时的中断/异常日志
-
-## 内存布局
-
-- **0x00000000-0x00000FFF**: 中断向量表（IVT）
-- **0x00001000-0x0009FFFF**: 传统RAM
-- **0x000A0000-0x000BFFFF**: VGA显存 (0xA0000)
-- **0x00100000+**: 内核代码和堆
-
-## 设计亮点
-
-### 1. 图形用户界面 (GUI)
-- 支持多窗口显示和管理
-- 任务栏和开始菜单
-- 鼠标和键盘交互
-- 双缓冲技术防止闪烁
-
-### 2. 进程调度
-- 简单的进程管理和切换
-- 支持进程关联窗口
-- 定时器中断驱动调度
-
-### 3. 内存管理
-- 链表式堆管理
-- 4字节对齐
-- 自动块分裂和合并
-
-### 4. 文件系统
-- 基于ext2格式
-- 支持inode和目录结构
-- 支持 `/system`、`/image` 顶层目录
-- 支持覆盖写已有文件并触发部分配置热更新
-- 可通过 `mkfs` 工具格式化
-
-## 使用说明
-
-### 开始菜单
-- 点击任务栏左下角的 "Start" 按钮打开开始菜单
-- Start 页面内容由 `/system/start.rtsk` 管理
-
-### 窗口操作
-- 点击窗口标题栏可拖动窗口
-- 窗口会自动分层显示
-- 最后激活的窗口显示在最上层
-
-### 任务栏
-- 任务栏显示所有打开的窗口
-- 点击任务栏按钮可切换窗口焦点
-
-### 终端
-- 默认隐藏系统文件，隐藏文件使用 `._hid_` 后缀
-- 使用 `sudo` 可查看和访问隐藏文件
-- 支持 `cd` 切换目录，提示符会显示当前路径
-- 支持 `ping`、`dns`、`http` 基础网络命令
-
-### 设置与配置
-- `/system/config.rtsk` 保存系统配置
-- `settings.tsk` 可直接修改壁纸、开始页、网络参数和屏幕模式
-- 配置文件写入后会立即在运行中的系统内生效（显示分辨率、壁纸、开始页、网络参数）
-
-## 技术栈
-
-- **语言**: C、x86-32汇编
-- **目标平台**: x86 32位PC
-- **模拟环境**: QEMU
-- **文件系统**: ext2
-- **显示模式**: VBE 32位线性帧缓冲（支持 640x480 / 800x600 / 1024x768，当前逻辑坐标仍为 320x200）
-
-## 限制和已知问题
-
-1. 当前应用和窗口系统的逻辑绘制坐标仍是 `320x200`，高分辨率模式通过缩放输出实现
-2. 进程调度为简单的轮转调度
-3. 文件系统仅支持覆盖写已有文件，不支持完整的文件创建/删除/扩容能力
-4. 网络栈目前只覆盖基础功能（`ping` / DNS / 简单 HTTP），不支持 HTTPS/TLS
-5. 无虚拟内存支持（无分页）
-
-## 扩展和改进方向
-
-- [ ] 实现虚拟内存和分页
-- [ ] 改进进程调度算法
-- [ ] 完善文件系统功能
-- [ ] 添加更多系统调用
-- [ ] 实现设备驱动框架
-- [ ] 支持用户态和内核态分离
-- [ ] 优化图形渲染性能
-
-## 许可证
-
-见 `LICENSE` 文件
-
-## 作者
-
-该项目是一个教学性的操作系统实现，用于学习和理解操作系统的基本原理。
-
----
-
-**最后更新**: 2026年3月
+- `build/boot.bin`：启动扇区
+- `build/kernel.bin`：内核二进制
+- `build/kernel.elf`：内核 ELF 文件
+- `build/*.tsk`：应用程序任务文件
+- `build/os-image.img`：完整 OS 镜像
+- `build/qemu.log`：运行时中断和异常日志

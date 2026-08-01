@@ -9,6 +9,10 @@
 #include "font8x8_basic.h"
 #include "kernel_config.h"
 #include "net.h"
+#include "tlx_kernel.h"
+
+// Timer ticks (for uptime)
+extern unsigned int timer_get_ticks(void);
 
 // 动态开始菜单磁贴内核态存储
 #define MAX_DYNAMIC_TILES 16
@@ -240,6 +244,8 @@ static SandboxLevel get_current_sandbox_level(void) {
 static int is_syscall_allowed(SandboxLevel level, unsigned int sysno) {
     if (level == SANDBOX_NONE) return 1;
 
+    if (sysno == SYS_TLX) return 1;
+
     if (level == SANDBOX_BASIC) {
         // BASIC: 允许常规 GUI/输入/窗口接口
         if (sysno == SYS_WRITE_FILE) return 0;
@@ -424,6 +430,12 @@ void syscall_handler(Registers* regs) {
     }
 
     switch (regs->eax) {
+        case SYS_TLX:
+            regs->eax = tlx_dispatch(regs);
+            break;
+        case SYS_GET_TICKS:
+            regs->eax = timer_get_ticks();
+            break;
         case SYS_EXIT:
             process_exit();
             break;

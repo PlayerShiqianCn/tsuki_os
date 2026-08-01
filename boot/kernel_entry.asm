@@ -251,7 +251,7 @@ extern kpanic_exception
 isr80:
     cli
     push byte 0
-    push byte 0x80
+    push dword 0x80
     pusha
     push ds
     push es

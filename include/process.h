@@ -14,6 +14,7 @@ typedef enum {
 // 进程控制块 (PCB)
 typedef struct Process {
     int pid;
+    int parent_pid;
     char name[32];
     unsigned int esp;       // 内核栈指针 (切换时的保存点)
     unsigned int stack_base;// 栈底地址 (用于回收内存)

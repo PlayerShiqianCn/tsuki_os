@@ -696,8 +696,9 @@ static void print_ls(int allow_hidden) {
 static void run_command_core(char* c, int allow_hidden) {
     if (s_cmp(c, "help") == 0) {
         write_line("Commands:");
-        write_line("help  version  cls  ls  cd <dir>");
-        write_line("cat <file>  run <name>");
+        write_line("help  version  pwd  cls/clear  ls");
+        write_line("cd <dir>  cat <file>  run <name>");
+        write_line("echo <text>  uptime  net  ip  gw");
         write_line("net  ip <a.b.c.d>  gw <a.b.c.d>");
         write_line("dnsip <a.b.c.d>  ping <a.b.c.d>");
         write_line("dns <host>  http <host> [path]");
@@ -708,6 +709,31 @@ static void run_command_core(char* c, int allow_hidden) {
 
     if (s_cmp(c, "cls") == 0) {
         clear_output();
+        return;
+    }
+
+    if (s_cmp(c, "clear") == 0) {
+        clear_output();
+        return;
+    }
+
+    if (s_cmp(c, "pwd") == 0) {
+        print_cwd();
+        return;
+    }
+
+    if (s_ncmp(c, "echo ", 5) == 0) {
+        write_line(ltrim(c + 5));
+        return;
+    }
+
+    if (s_cmp(c, "uptime") == 0) {
+        unsigned int ticks = get_ticks();
+        write_text("Uptime ");
+        write_uint(ticks / 100);
+        write_text(" s (");
+        write_uint(ticks);
+        write_line(" ticks)");
         return;
     }
 

@@ -1,6 +1,6 @@
 # Makefile
 
-CROSS ?=
+CROSS ?= $(shell if command -v i686-linux-gnu-gcc >/dev/null 2>&1; then echo i686-linux-gnu-; fi)
 
 CFLAGS = -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g -Iinclude
 ifeq ($(CROSS),)
@@ -55,6 +55,7 @@ KERNEL_C_SRCS = \
 	fs/fs.c \
 	kernel/timer.c \
 	kernel/syscall.c \
+	kernel/tlx.c \
 	kernel/process.c \
 	kernel/klog.c \
 	drivers/pci.c \
@@ -77,7 +78,7 @@ SETTINGS_TSK_ELF = $(BUILD_DIR)/settings.tsk.elf
 SETTINGS_TSK = $(BUILD_DIR)/settings.tsk
 TSK_APPS = $(APP_TSK) $(TERMINAL_TSK) $(WM_TSK) $(START_TSK) $(IMAGE_TSK) $(SETTINGS_TSK)
 
-.PHONY: all run clean FORCE
+.PHONY: all run clean debug FORCE
 
 all: $(OS_IMAGE)
 
@@ -211,3 +212,6 @@ clean:
 	rm -f *.o *.bin *.img *.elf *.tsk *.tsk.elf *.tsk._hid_ *.txt._hid_ *.tso version.txt start.rtsk config.rtsk hello.txt .build_version tsk_girl.png tsk_girl.jrgb._hid_ tsk_girl.jr32._hid_ baseline_test.jpg baseline_test.rgb qemu.log qemu_vbe_test.log
 	rm -f boot/*.o kernel/*.o drivers/*.o fs/*.o apps/*.o userspace/*.o
 	rm -rf $(BUILD_DIR) .fsroot
+
+debug: $(OS_IMAGE)
+	qemu-system-i386 -vga std -serial stdio -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)

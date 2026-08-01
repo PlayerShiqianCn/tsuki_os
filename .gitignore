@@ -1,3 +1,11 @@
 
 qemu.log
 qemu_vbe_test.log
+
+# Local/generated artifacts
+/build/
+/.serena/
+/*.png
+/*.ppm
+/boot_check*.py
+/img_open*.py
