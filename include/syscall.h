@@ -40,6 +40,32 @@
 #define SYS_SET_PRIORITY 35
 #define SYS_GET_PRIORITY 36
 #define SYS_CREATE_FILE 37
+#define SYS_LAUNCH_TSK_EX 38
+#define SYS_BLIT_RGB      39
+#define SYS_GET_VIDEO_STATS 40
+
+#define TSK_LAUNCH_ACTIVATE     0
+#define TSK_LAUNCH_NEW_INSTANCE 1
+
+typedef struct {
+    const unsigned char* pixels;
+    int src_width;
+    int src_height;
+    int src_row_stride;
+    int src_pixel_stride;
+    int dst_x;
+    int dst_y;
+    int dst_width;
+    int dst_height;
+} RgbBlitArgs;
+
+typedef struct {
+    unsigned int frames;
+    unsigned int full_redraws;
+    unsigned int damaged_logical_pixels;
+    unsigned int framebuffer_pixels_written;
+    unsigned int idle_halts;
+} UserVideoStats;
 
 // 窗口事件位
 #define WIN_EVENT_FOCUS_CHANGED 0x1

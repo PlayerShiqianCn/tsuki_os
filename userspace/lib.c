@@ -47,8 +47,8 @@ unsigned int get_ticks(void) {
     return (unsigned int)_syscall3(SYS_GET_TICKS, 0, 0, 0);
 }
 
-int read_file(const char* filename, void* buffer) {
-    return _syscall3(SYS_READ_FILE, (int)filename, (int)buffer, 0);
+int read_file(const char* filename, void* buffer, unsigned int capacity) {
+    return _syscall3(SYS_READ_FILE, (int)filename, (int)buffer, (int)capacity);
 }
 
 int write_file(const char* filename, const void* buffer, int size) {
@@ -61,6 +61,10 @@ void draw_rect(int x, int y, int w, int h, int color) {
 
 void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
     _syscall5(SYS_DRAW_RECT_RGB, x, y, w, h, (int)rgb);
+}
+
+int draw_rgb(const RgbBlitArgs* args) {
+    return _syscall3(SYS_BLIT_RGB, (int)args, 0, 0);
 }
 
 void draw_text(int x, int y, const char* str, int color) {
@@ -101,6 +105,14 @@ int list_files_at(char* buffer, int max_len, const char* dir) {
 
 int launch_tsk(const char* filename) {
     return _syscall3(SYS_LAUNCH_TSK, (int)filename, 0, 0);
+}
+
+int launch_tsk_ex(const char* filename, int flags) {
+    return _syscall3(SYS_LAUNCH_TSK_EX, (int)filename, flags, 0);
+}
+
+int get_video_stats(UserVideoStats* out) {
+    return _syscall3(SYS_GET_VIDEO_STATS, (int)out, 0, 0);
 }
 
 int get_mouse_click(int* x, int* y) {
@@ -270,4 +282,3 @@ int tlx_unlink(const char* path) {
 int tlx_mkdir(const char* path) {
     return _tlx_call(TLX_OP_MKDIR, (int)path, 0, 0, 0);
 }
-

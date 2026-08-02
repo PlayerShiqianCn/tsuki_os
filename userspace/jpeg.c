@@ -3,6 +3,8 @@
 #define JPEG_MAX_COMPONENTS 3
 #define JPEG_MAX_HUFF_SYMBOLS 256
 #define JPEG_PROG_MAX_BLOCKS 512
+#define JPEG_INT_MAX 2147483647
+#define JPEG_INT_MIN (-2147483647 - 1)
 
 typedef struct {
     unsigned char counts[16];
@@ -84,16 +86,21 @@ static void reset_huff_table(JpegHuffTable* table) {
     table->valid = 0;
 }
 
-static void build_huff_table(JpegHuffTable* table) {
+static int build_huff_table(JpegHuffTable* table) {
     int code = 0;
     int k = 0;
+    int codes_left = 1;
 
     table->min_code[0] = -1;
     table->max_code[0] = -1;
     table->val_ptr[0] = 0;
+    table->valid = 0;
 
     for (int len = 1; len <= 16; len++) {
         int count = table->counts[len - 1];
+        codes_left = (codes_left << 1) - count;
+        if (codes_left < 0) return 0;
+
         if (count == 0) {
             table->min_code[len] = -1;
             table->max_code[len] = -1;
@@ -108,7 +115,22 @@ static void build_huff_table(JpegHuffTable* table) {
         }
         code <<= 1;
     }
+
+    if (k == 0) return 0;
     table->valid = 1;
+    return 1;
+}
+
+static int huff_symbols_valid(int table_class, const unsigned char* symbols, int count) {
+    for (int i = 0; i < count; i++) {
+        int symbol = symbols[i];
+        if (table_class == 0) {
+            if (symbol > 11) return 0;
+        } else {
+            if ((symbol & 0x0F) > 10) return 0;
+        }
+    }
+    return 1;
 }
 
 static int next_marker(const unsigned char* data, int size, int* pos, unsigned char* out_marker, unsigned short* out_len) {
@@ -155,6 +177,7 @@ static int fill_bits(JpegBitReader* br, int need_bits) {
 }
 
 static int get_bits(JpegBitReader* br, int count, int* out_value) {
+    if (!br || !out_value || count < 0 || count > 16) return 0;
     if (count == 0) {
         *out_value = 0;
         return 1;
@@ -216,15 +239,55 @@ static int clamp_u8(int value) {
     return value;
 }
 
-static void idct_block(const int* coeff, unsigned char* out_pixels) {
+static int add_dc_diff(JpegComponent* comp, int diff) {
+    if (!comp) return 0;
+    if (diff > 0 && comp->dc_pred > 32767 - diff) return 0;
+    if (diff < 0 && comp->dc_pred < -32768 - diff) return 0;
+    comp->dc_pred += diff;
+    return 1;
+}
+
+static int scale_to_short(int value, int shift, short* out_value) {
+    int scale;
+    int scaled;
+
+    if (!out_value || shift < 0 || shift > 13) return 0;
+    scale = 1 << shift;
+    if (value > 32767 / scale || value < -32768 / scale) return 0;
+    scaled = value * scale;
+    *out_value = (short)scaled;
+    return 1;
+}
+
+static int required_rgb_capacity(int width, int height, int* out_required) {
+    int row_bytes;
+
+    if (!out_required || width <= 0 || height <= 0) return 0;
+    if (width > JPEG_INT_MAX / 3) return 0;
+    row_bytes = width * 3;
+    if (height > JPEG_INT_MAX / row_bytes) return 0;
+    *out_required = row_bytes * height;
+    return 1;
+}
+
+static int add_idct_term(int* sum, int value, int basis) {
+    int term = value * basis;
+    if (term > 0 && *sum > JPEG_INT_MAX - term) return 0;
+    if (term < 0 && *sum < JPEG_INT_MIN - term) return 0;
+    *sum += term;
+    return 1;
+}
+
+static int idct_block(const int* coeff, unsigned char* out_pixels) {
     int temp[64];
 
     for (int row = 0; row < 8; row++) {
         for (int x = 0; x < 8; x++) {
             int sum = 0;
             for (int u = 0; u < 8; u++) {
-                sum += coeff[row * 8 + u] * (int)idct_basis[x][u];
+                if (!add_idct_term(&sum, coeff[row * 8 + u], (int)idct_basis[x][u])) return 0;
             }
+            if (sum > JPEG_INT_MAX - 128) return 0;
             temp[row * 8 + x] = (sum + 128) >> 8;
         }
     }
@@ -233,11 +296,13 @@ static void idct_block(const int* coeff, unsigned char* out_pixels) {
         for (int y = 0; y < 8; y++) {
             int sum = 0;
             for (int v = 0; v < 8; v++) {
-                sum += temp[v * 8 + col] * (int)idct_basis[y][v];
+                if (!add_idct_term(&sum, temp[v * 8 + col], (int)idct_basis[y][v])) return 0;
             }
+            if (sum > JPEG_INT_MAX - 128) return 0;
             out_pixels[y * 8 + col] = (unsigned char)clamp_u8(((sum + 128) >> 8) + 128);
         }
     }
+    return 1;
 }
 
 static void ycbcr_to_rgb(int y, int cb, int cr, unsigned char* out_rgb) {
@@ -300,9 +365,10 @@ static int prog_decode_dc_scan(const JpegComponent* frame_comps,
                             int diff;
                             short* block = prog_block_ptr(frame_index, mx * comp->h + hx, my * comp->v + vy);
                             if (!huff_decode(br, &dc_tables[comp->td], &symbol)) return 0;
+                            if (symbol < 0 || symbol > 11) return 0;
                             if (!receive_extend(br, symbol, &diff)) return 0;
-                            comp->dc_pred += diff;
-                            block[0] = (short)(comp->dc_pred << al);
+                            if (!add_dc_diff(comp, diff)) return 0;
+                            if (!scale_to_short(comp->dc_pred, al, &block[0])) return 0;
                         }
                     }
                 }
@@ -323,9 +389,10 @@ static int prog_decode_dc_scan(const JpegComponent* frame_comps,
                 int diff;
                 short* block = prog_block_ptr(frame_index, bx, by);
                 if (!huff_decode(br, &dc_tables[comp->td], &symbol)) return 0;
+                if (symbol < 0 || symbol > 11) return 0;
                 if (!receive_extend(br, symbol, &diff)) return 0;
-                comp->dc_pred += diff;
-                block[0] = (short)(comp->dc_pred << al);
+                if (!add_dc_diff(comp, diff)) return 0;
+                if (!scale_to_short(comp->dc_pred, al, &block[0])) return 0;
             }
         }
     }
@@ -378,10 +445,11 @@ static int prog_decode_ac_scan(const JpegComponent* frame_comps,
                     break;
                 }
 
+                if (size_bits > 10) return 0;
                 k += run;
                 if (k > se || k >= 64) return 0;
                 if (!receive_extend(br, size_bits, &value)) return 0;
-                block[zigzag_map[k]] = (short)(value << al);
+                if (!scale_to_short(value, al, &block[zigzag_map[k]])) return 0;
                 k++;
             }
         }
@@ -421,7 +489,7 @@ static int prog_output_rgb(const JpegComponent* comps, int comp_count,
                     }
 
                     dequantize_block(block, qt[comp->tq]);
-                    idct_block(block, spatial);
+                    if (!idct_block(block, spatial)) return 0;
 
                     for (int py = 0; py < 8; py++) {
                         for (int px = 0; px < 8; px++) {
@@ -642,8 +710,9 @@ static int jpeg_decode_progressive_rgb(const unsigned char* data, int size, unsi
                 for (int i = 0; i < total; i++) {
                     table->symbols[i] = seg[hpos + i];
                 }
+                if (!huff_symbols_valid(table_class, table->symbols, total)) return 0;
                 hpos += total;
-                build_huff_table(table);
+                if (!build_huff_table(table)) return 0;
             }
         } else if (marker == 0xDD) {
             if (seg_size != 2) return 0;
@@ -685,7 +754,7 @@ static int jpeg_decode_progressive_rgb(const unsigned char* data, int size, unsi
             ah = seg[1 + scan_comp_count * 2 + 2] >> 4;
             al = seg[1 + scan_comp_count * 2 + 2] & 0x0F;
 
-            if (ah != 0) return 0;
+            if (ah != 0 || al > 13) return 0;
             if (ss == 0 && se != 0) return 0;
             if (ss > se || se >= 64) return 0;
             if (ss != 0 && scan_comp_count != 1) return 0;
@@ -715,7 +784,10 @@ static int jpeg_decode_progressive_rgb(const unsigned char* data, int size, unsi
     }
 
     if (!frame_ready) return 0;
-    if (out_capacity < width * height * 3) return 0;
+    {
+        int required;
+        if (!required_rgb_capacity(width, height, &required) || out_capacity < required) return 0;
+    }
     jpeg_last_error_code = 250;
     if (!prog_output_rgb(comps, comp_count, qt, width, height, max_h, max_v, out_rgb)) return 0;
 
@@ -862,8 +934,9 @@ static int jpeg_decode_baseline_rgb(const unsigned char* data, int size, unsigne
                 for (int i = 0; i < total; i++) {
                     table->symbols[i] = seg[hpos + i];
                 }
+                if (!huff_symbols_valid(table_class, table->symbols, total)) return 0;
                 hpos += total;
-                build_huff_table(table);
+                if (!build_huff_table(table)) return 0;
             }
         } else if (marker == 0xDD) {
             if (seg_size != 2) return 0;
@@ -874,7 +947,10 @@ static int jpeg_decode_baseline_rgb(const unsigned char* data, int size, unsigne
     }
 
     if (!scan_ready || comp_count == 0 || width <= 0 || height <= 0) return 0;
-    if (out_capacity < width * height * 3) return 0;
+    {
+        int required;
+        if (!required_rgb_capacity(width, height, &required) || out_capacity < required) return 0;
+    }
 
     {
         const unsigned char* seg;
@@ -947,7 +1023,7 @@ static int jpeg_decode_baseline_rgb(const unsigned char* data, int size, unsigne
                     dc_bits = symbol;
                     if (dc_bits < 0 || dc_bits > 11) return 0;
                     if (!receive_extend(&br, dc_bits, &dc_diff)) return 0;
-                    comp->dc_pred += dc_diff;
+                    if (!add_dc_diff(comp, dc_diff)) return 0;
                     block[0] = comp->dc_pred;
 
                     {
@@ -966,6 +1042,7 @@ static int jpeg_decode_baseline_rgb(const unsigned char* data, int size, unsigne
 
                             run = (symbol >> 4) & 0x0F;
                             size_bits = symbol & 0x0F;
+                            if (size_bits == 0 || size_bits > 10) return 0;
                             k += run;
                             if (k >= 64) return 0;
                             if (!receive_extend(&br, size_bits, &ac_value)) return 0;
@@ -975,7 +1052,7 @@ static int jpeg_decode_baseline_rgb(const unsigned char* data, int size, unsigne
                     }
 
                     dequantize_block(block, qt[comp->tq]);
-                    idct_block(block, spatial);
+                    if (!idct_block(block, spatial)) return 0;
 
                     for (int py = 0; py < 8; py++) {
                         for (int px = 0; px < 8; px++) {

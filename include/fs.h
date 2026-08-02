@@ -138,6 +138,14 @@ typedef struct {
     unsigned int reserved;
 } TskHeader;
 
+typedef struct {
+    unsigned int load_addr;
+    unsigned int entry_offset;
+    unsigned int image_size;
+    unsigned int inode_num;
+    int has_header;
+} TskImageInfo;
+
 #define TSK_MAGIC "TSK2"
 #define TSK_VERSION 1u
 
@@ -174,7 +182,7 @@ void fs_init();
 int fs_is_ready(void);
 void fs_list_files();
 int fs_get_file_list(char* buffer, int max_len, const char* dir_path);
-int fs_read_file(const char* filename, void* buffer);
+int fs_read_file(const char* filename, void* buffer, unsigned int capacity);
 int fs_create_file(const char* path);
 int fs_delete_file(const char* path);
 int fs_mkdir(const char* path);
@@ -188,5 +196,7 @@ int app_file_read(AppFile* file, void* buffer, unsigned int size);
 // TSK 加载
 int tsk_load(const char* filename, void** out_entry,
              unsigned int* out_load_base, unsigned int* out_image_size);
+int tsk_probe(const char* filename, TskImageInfo* out_info);
+int tsk_load_to(const char* filename, void* destination, const TskImageInfo* expected);
 
 #endif

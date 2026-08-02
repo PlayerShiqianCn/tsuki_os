@@ -278,7 +278,7 @@ static int tlx_write_file(TlxHandle* handle, const void* buffer, unsigned int si
     if (!snapshot) return -TLX_ENOSPC;
     memset(snapshot, 0, new_size);
     if (handle->size > 0) {
-        result = fs_read_file(handle->path, snapshot);
+        result = fs_read_file(handle->path, snapshot, handle->size);
         if (result != (int)handle->size) {
             free(snapshot);
             return -TLX_EIO;

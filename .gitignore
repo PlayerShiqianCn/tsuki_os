@@ -10,3 +10,5 @@ qemu_vbe_test.log
 /boot_check*.py
 /img_open*.py
 .openclaw/
+/run.sh
+/artifacts/

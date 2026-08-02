@@ -32,7 +32,7 @@ __attribute__((naked)) void _start() {
 static void launch_and_close(void) {
     if (total_tiles == 0) return;
     const char* name = all_tiles[selected].file;
-    launch_tsk(name);
+    launch_tsk_ex(name, TSK_LAUNCH_NEW_INSTANCE);
     exit();
 }
 

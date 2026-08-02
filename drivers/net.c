@@ -1,6 +1,7 @@
 #include "net.h"
 #include "pci.h"
 #include "utils.h"
+#include "paging.h"
 
 #define E1000_VENDOR_INTEL 0x8086
 #define E1000_DEV_82540EM  0x100E
@@ -964,6 +965,12 @@ void net_init(void) {
     cmd |= 0x0006;
     pci_config_write_word(dev.bus, dev.slot, dev.func, 0x04, cmd);
 
+    if (paging_is_enabled() && !paging_map_identity_range(mmio, 0x10000u)) {
+        g_net_info.initialized = 0;
+        g_net_info.tx_ready = 0;
+        g_net_info.rx_ready = 0;
+        return;
+    }
     g_e1000_mmio = (volatile unsigned char*)mmio;
 
     // 屏蔽设备中断，先走轮询

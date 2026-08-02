@@ -107,7 +107,7 @@ static void load_start_registry(void) {
     buf = (char*)malloc(file.size + 1);
     if (!buf) return;
 
-    read = fs_read_file("system/start.rtsk", buf);
+    read = fs_read_file("system/start.rtsk", buf, file.size);
     if (read <= 0) {
         free(buf);
         return;
@@ -256,6 +256,8 @@ static int is_syscall_allowed(SandboxLevel level, unsigned int sysno) {
     if (sysno == SYS_EXIT ||
         sysno == SYS_DRAW_RECT ||
         sysno == SYS_DRAW_TEXT ||
+        sysno == SYS_BLIT_RGB ||
+        sysno == SYS_DRAW_TEXT ||
         sysno == SYS_GET_KEY ||
         sysno == SYS_WIN_IS_FOCUSED ||
         sysno == SYS_WIN_GET_EVENT ||
@@ -301,7 +303,7 @@ void sys_draw_rect_sandboxed(int x, int y, int w, int h, int color) {
             }
         }
     }
-    video_request_redraw();
+    video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, w, h);
 }
 
 static int get_font_index(char c) {
@@ -360,7 +362,7 @@ static void sys_draw_text_sandboxed(int x, int y, const char* str, int color) {
 
         cursor_x += 8;
     }
-    video_request_redraw();
+    video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, client_w - x, cursor_y - y + 8);
 }
 
 static void sys_draw_rect_rgb_sandboxed(int x, int y, int w, int h, unsigned int rgb) {
@@ -388,7 +390,54 @@ static void sys_draw_rect_rgb_sandboxed(int x, int y, int w, int h, unsigned int
             win_put_pixel(win, x + j + offset_x, y + i + offset_y, rgb);
         }
     }
-    video_request_redraw();
+    video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, w, h);
+}
+
+static int sys_blit_rgb_sandboxed(const RgbBlitArgs* args) {
+    Window* win;
+    int offset_x, offset_y, client_w, client_h;
+    int x0, y0, x1, y1;
+
+    if (!current_process || !current_process->win || !args || !args->pixels) return 0;
+    if (args->src_width <= 0 || args->src_height <= 0 ||
+        args->dst_width <= 0 || args->dst_height <= 0) return 0;
+    if (args->src_pixel_stride < 3 || args->src_pixel_stride > 4) return 0;
+    if (args->src_width > 4096 || args->src_height > 4096) return 0;
+    if (args->src_row_stride < args->src_width * args->src_pixel_stride) return 0;
+
+    win = current_process->win;
+    offset_x = win->borderless ? 0 : BORDER_WIDTH;
+    offset_y = win->borderless ? 0 : TITLE_BAR_HEIGHT;
+    client_w = win->borderless ? win->w : win->w - BORDER_WIDTH * 2;
+    client_h = win->borderless ? win->h : win->h - TITLE_BAR_HEIGHT - BORDER_WIDTH;
+
+    x0 = args->dst_x < 0 ? 0 : args->dst_x;
+    y0 = args->dst_y < 0 ? 0 : args->dst_y;
+    x1 = args->dst_x + args->dst_width;
+    y1 = args->dst_y + args->dst_height;
+    if (x1 > client_w) x1 = client_w;
+    if (y1 > client_h) y1 = client_h;
+    if (x0 >= x1 || y0 >= y1) return 0;
+
+    for (int y = y0; y < y1; y++) {
+        int source_y = scale_nearest_index(y - args->dst_y, args->dst_height, args->src_height);
+        const unsigned char* row;
+        if (source_y < 0) continue;
+        row = args->pixels + source_y * args->src_row_stride;
+        for (int x = x0; x < x1; x++) {
+            int source_x = scale_nearest_index(x - args->dst_x, args->dst_width, args->src_width);
+            const unsigned char* pixel;
+            unsigned int rgb;
+            if (source_x < 0) continue;
+            pixel = row + source_x * args->src_pixel_stride;
+            rgb = ((unsigned int)pixel[0] << 16) |
+                  ((unsigned int)pixel[1] << 8) |
+                  (unsigned int)pixel[2];
+            win_put_pixel(win, x + offset_x, y + offset_y, rgb);
+        }
+    }
+    video_invalidate_rect(win->x + offset_x + x0, win->y + offset_y + y0, x1 - x0, y1 - y0);
+    return 1;
 }
 
 static int sys_win_create_sandboxed(int x, int y, int w, int h, const char* title) {
@@ -446,7 +495,8 @@ void syscall_handler(Registers* regs) {
             break;
 
         case SYS_READ_FILE:
-            regs->eax = fs_read_file((char*)regs->ebx, (void*)regs->ecx);
+            regs->eax = fs_read_file((char*)regs->ebx, (void*)regs->ecx,
+                                     (unsigned int)regs->edx);
             break;
 
         case SYS_DRAW_RECT:
@@ -457,6 +507,24 @@ void syscall_handler(Registers* regs) {
         case SYS_DRAW_RECT_RGB:
             // ebx=x, ecx=y, edx=w, esi=h, edi=0xRRGGBB
             sys_draw_rect_rgb_sandboxed(regs->ebx, regs->ecx, regs->edx, regs->esi, (unsigned int)regs->edi);
+            break;
+
+        case SYS_BLIT_RGB:
+            regs->eax = sys_blit_rgb_sandboxed((const RgbBlitArgs*)regs->ebx);
+            break;
+
+        case SYS_GET_VIDEO_STATS:
+            if (regs->ebx) {
+                VideoStats stats;
+                UserVideoStats* out = (UserVideoStats*)regs->ebx;
+                video_get_stats(&stats);
+                out->frames = stats.frames;
+                out->full_redraws = stats.full_redraws;
+                out->damaged_logical_pixels = stats.damaged_logical_pixels;
+                out->framebuffer_pixels_written = stats.framebuffer_pixels_written;
+                out->idle_halts = stats.idle_halts;
+                regs->eax = 1;
+            } else regs->eax = 0;
             break;
 
         case SYS_SLEEP:
@@ -535,6 +603,10 @@ void syscall_handler(Registers* regs) {
 
         case SYS_LAUNCH_TSK:
             regs->eax = console_launch_tsk((const char*)regs->ebx);
+            break;
+
+        case SYS_LAUNCH_TSK_EX:
+            regs->eax = console_launch_tsk_ex((const char*)regs->ebx, (int)regs->ecx);
             break;
 
         case SYS_GET_MOUSE_EVENT:

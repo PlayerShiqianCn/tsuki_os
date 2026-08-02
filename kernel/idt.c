@@ -25,6 +25,7 @@ extern void irq12_handler_stub();
 extern void irq13_handler_stub();
 extern void irq14_handler_stub();
 extern void irq15_handler_stub();
+extern void page_fault_stub();
 
 // 设置单个 IDT 条目
 static void idt_set_gate(unsigned char num, unsigned long base, unsigned short sel, unsigned char flags) {
@@ -74,6 +75,7 @@ void init_idt() {
     for (int i = 0; i < 32; i++) {
         idt_set_gate(i, (unsigned int)isr_err_stub, 0x08, 0x8E);
     }
+    idt_set_gate(14, (unsigned int)page_fault_stub, 0x08, 0x8E);
 
     // 2. 重新映射 PIC (非常重要，否则 IRQ0 会由 0x08 触发，与 Double Fault 冲突)
     pic_remap();

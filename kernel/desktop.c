@@ -14,28 +14,14 @@ static int is_start_window(Window* w) {
 }
 
 static int is_start_open(void) {
-    int count = win_get_count();
-
+    Window* snapshot[MAX_LAYERS];
+    int count = win_snapshot_layers(snapshot, MAX_LAYERS);
+    int found = 0;
     for (int i = 0; i < count; i++) {
-        Window* w = win_get_at_layer(i);
-
-        if (is_start_window(w)) return 1;
+        if (is_start_window(snapshot[i])) { found = 1; break; }
     }
-    return 0;
-}
-
-static int count_taskbar_windows(void) {
-    int count = win_get_count();
-    int visible = 0;
-
-    for (int i = 0; i < count; i++) {
-        Window* w = win_get_at_layer(i);
-
-        if (!w || !w->visible || is_start_window(w)) continue;
-        visible++;
-    }
-
-    return visible;
+    win_release_snapshot(snapshot, count);
+    return found;
 }
 
 static int get_taskbar_button_width(int button_count) {
@@ -101,76 +87,71 @@ void desktop_draw_background(void) {
 }
 
 void desktop_draw_taskbar(void) {
-    int count;
-    int visible_count;
+    Window* snapshot[MAX_LAYERS];
+    int count = win_snapshot_layers(snapshot, MAX_LAYERS);
+    int visible_count = 0;
     int btn_width;
-    int start_x;
-
-    if (is_start_open()) return;
-
-    draw_rect(0, SCREEN_HEIGHT - 20, SCREEN_WIDTH, 20, C_LIGHT_GRAY);
-    draw_rect(0, SCREEN_HEIGHT - 20, 50, 20, kernel_is_start_page_enabled() ? C_DARK_GRAY : C_RED);
-    draw_string(8, SCREEN_HEIGHT - 15, kernel_is_start_page_enabled() ? "TSK" : "OFF", C_WHITE);
-
-    count = win_get_count();
-    visible_count = count_taskbar_windows();
-    btn_width = get_taskbar_button_width(visible_count);
-    start_x = 55;
+    int start_x = 55;
 
     for (int i = 0; i < count; i++) {
-        Window* w = win_get_at_layer(i);
+        if (!is_start_window(snapshot[i])) visible_count++;
+    }
+    if (visible_count != count) {
+        win_release_snapshot(snapshot, count);
+        return;
+    }
+
+    draw_rect(0, SCREEN_HEIGHT - 20, SCREEN_WIDTH, 20, C_LIGHT_GRAY);
+    draw_rect(0, SCREEN_HEIGHT - 20, 50, 20,
+              kernel_is_start_page_enabled() ? C_DARK_GRAY : C_RED);
+    draw_string(8, SCREEN_HEIGHT - 15,
+                kernel_is_start_page_enabled() ? "TSK" : "OFF", C_WHITE);
+    btn_width = get_taskbar_button_width(visible_count);
+
+    for (int i = 0; i < count; i++) {
+        Window* w = snapshot[i];
         char label[16];
-
-        if (!w || !w->visible || is_start_window(w)) continue;
-
+        if (!w || !w->visible) continue;
         draw_rect(start_x, SCREEN_HEIGHT - 18, btn_width, 16, C_WHITE);
         format_taskbar_title(w->title, label, sizeof(label), btn_width);
         draw_string(start_x + 2, SCREEN_HEIGHT - 14, label, C_BLACK);
-
-        if (w == win_get_at_layer(count - 1)) {
-            draw_rect(start_x, SCREEN_HEIGHT - 2, btn_width, 2, C_BLUE);
-        }
-
+        if (i == count - 1) draw_rect(start_x, SCREEN_HEIGHT - 2, btn_width, 2, C_BLUE);
         start_x += btn_width + 2;
     }
+    win_release_snapshot(snapshot, count);
 }
 
 int desktop_handle_taskbar_click(int mx, int my) {
+    Window* snapshot[MAX_LAYERS];
     int count;
-    int visible_count;
+    int visible_count = 0;
     int btn_width;
-    int start_x;
+    int start_x = 55;
 
     if (is_start_open()) return 0;
     if (my < SCREEN_HEIGHT - 20) return 0;
-
     if (mx < 50) {
         if (!kernel_is_start_page_enabled()) return 1;
         klog_write("start click");
-        if (!console_launch_tsk("system/start.tsk")) {
-            klog_write("start launch failed");
-            /* 不 panic，让用户继续操作 */
-        }
+        if (!console_launch_tsk("system/start.tsk")) klog_write("start launch failed");
         return 1;
     }
 
-    count = win_get_count();
-    visible_count = count_taskbar_windows();
+    count = win_snapshot_layers(snapshot, MAX_LAYERS);
+    for (int i = 0; i < count; i++) if (!is_start_window(snapshot[i])) visible_count++;
     btn_width = get_taskbar_button_width(visible_count);
-    start_x = 55;
-
-    if (btn_width <= 0) return 0;
+    if (btn_width <= 0) { win_release_snapshot(snapshot, count); return 0; }
 
     for (int i = 0; i < count; i++) {
-        Window* w = win_get_at_layer(i);
-
+        Window* w = snapshot[i];
         if (!w || !w->visible || is_start_window(w)) continue;
         if (mx >= start_x && mx < start_x + btn_width) {
             win_bring_to_front(w);
+            win_release_snapshot(snapshot, count);
             return 1;
         }
         start_x += btn_width + 2;
     }
-
+    win_release_snapshot(snapshot, count);
     return 0;
 }

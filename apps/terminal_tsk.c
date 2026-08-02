@@ -555,7 +555,7 @@ static void print_system_version(void) {
     char file_buf[FILE_BUF_SIZE];
     char version[48];
     char build[24];
-    int n = read_file("system/version.txt", file_buf);
+    int n = read_file("system/version.txt", file_buf, sizeof(file_buf) - 1);
     int has_version;
     int has_build;
 
@@ -625,6 +625,7 @@ static void print_ps(void) {
 static void print_sysinfo(void) {
     char ver[64];
     unsigned int ticks;
+    UserVideoStats video_stats;
 
     write_line("=== Tsuki OS System Info ===");
 
@@ -637,6 +638,13 @@ static void print_sysinfo(void) {
     write_text("Uptime:   ");
     write_uint(ticks / 100);
     write_line(" s");
+
+    if (get_video_stats(&video_stats)) {
+        write_text("Frames:   "); write_uint(video_stats.frames); push_char('\n');
+        write_text("Damage px:"); write_uint(video_stats.damaged_logical_pixels); push_char('\n');
+        write_text("FB writes:"); write_uint(video_stats.framebuffer_pixels_written); push_char('\n');
+        write_text("Idle hlt: "); write_uint(video_stats.idle_halts); push_char('\n');
+    }
 
     write_line("");
     write_line("Processes:");
@@ -706,15 +714,20 @@ static void rtrim(char* s) {
     }
 }
 
-static void launch_and_report(const char* filename) {
+static void launch_and_report_ex(const char* filename, int flags) {
     write_text("Launching ");
     write_text(filename);
     push_char('\n');
-    if (launch_tsk(filename)) {
-        write_line("Process started/focused.");
+    if (launch_tsk_ex(filename, flags)) {
+        write_line((flags & TSK_LAUNCH_NEW_INSTANCE) ? "New instance started." :
+                   "Process started/focused.");
     } else {
         write_line("Launch failed.");
     }
+}
+
+static void launch_and_report(const char* filename) {
+    launch_and_report_ex(filename, TSK_LAUNCH_ACTIVATE);
 }
 
 static void print_ls(int allow_hidden) {
@@ -763,7 +776,7 @@ static void run_command_core(char* c, int allow_hidden) {
     if (s_cmp(c, "help") == 0) {
         write_line("Commands:");
         write_line("help  version  pwd  cls/clear  ls");
-        write_line("cd <dir>  cat <file>  run <name>");
+        write_line("cd <dir>  cat <file>  run [--new] <name>");
         write_line("echo <text>  uptime  sysinfo  ps");
         write_line("mkdir <dir>  touch <file>  rm <file>");
         write_line("net  ip <a.b.c.d>  gw <a.b.c.d>");
@@ -1110,7 +1123,7 @@ static void run_command_core(char* c, int allow_hidden) {
         }
 
         char file_buf[FILE_BUF_SIZE];
-        int n = read_file(real_name, file_buf);
+        int n = read_file(real_name, file_buf, sizeof(file_buf) - 1);
         if (n <= 0) {
             write_line("Read failed.");
             return;
@@ -1124,8 +1137,13 @@ static void run_command_core(char* c, int allow_hidden) {
 
     if (s_ncmp(c, "run ", 4) == 0) {
         char* name = ltrim(c + 4);
+        int launch_flags = TSK_LAUNCH_ACTIVATE;
+        if (s_ncmp(name, "--new ", 6) == 0) {
+            launch_flags = TSK_LAUNCH_NEW_INSTANCE;
+            name = ltrim(name + 6);
+        }
         if (name[0] == '\0') {
-            write_line("Usage: run <name>");
+            write_line("Usage: run [--new] <name>");
             return;
         }
 
@@ -1135,7 +1153,7 @@ static void run_command_core(char* c, int allow_hidden) {
             return;
         }
 
-        launch_and_report(real_name);
+        launch_and_report_ex(real_name, launch_flags);
         return;
     }
 

@@ -4,6 +4,7 @@
 [EXTERN timer_tick_and_schedule]
 [EXTERN keyboard_handler_isr]
 [EXTERN mouse_handler_isr]
+[EXTERN paging_handle_fault]
 
 global _start
 _start:
@@ -37,6 +38,7 @@ global irq14_handler_stub
 global irq15_handler_stub
 global isr_ignore_stub
 global isr_err_stub
+global page_fault_stub
 
 ; --- 时钟中断跳板 (IRQ0) ---
 ; 支持多任务调度
@@ -225,6 +227,24 @@ irq15_handler_stub:
     iret
 
 ; --- 错误异常处理 ---
+page_fault_stub:
+    cli
+    cld
+    mov esi, cr2
+    mov edi, [esp]
+    mov ebp, [esp + 4]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    push ebp
+    push edi
+    push esi
+    call paging_handle_fault
+    add esp, 12
+    jmp $
+
 isr_err_stub:
     cli
     cld

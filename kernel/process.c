@@ -5,6 +5,9 @@
 #include "console.h"
 #include "klog.h"
 #include "tlx_kernel.h"
+#include "kernel_core.h"
+#include "irq.h"
+#include "paging.h"
 
 Process* current_process = 0;
 static Process* process_list = 0;
@@ -19,7 +22,6 @@ static unsigned int scheduler_tick_count = 0;
 
 static Process process_pool[MAX_PROCESSES];
 static unsigned char process_used[MAX_PROCESSES];
-static unsigned char process_stacks[MAX_PROCESSES][STACK_SIZE];
 
 static int process_context_is_valid(const Process* proc) {
     unsigned int stack_limit;
@@ -88,10 +90,21 @@ static void unlink_process(Process* proc) {
     }
 }
 
+static int process_slot_index(const Process* proc) {
+    for (int i = 0; proc && i < MAX_PROCESSES; i++) if (&process_pool[i] == proc) return i;
+    return -1;
+}
+
 static void free_process_slot(Process* proc) {
     if (!proc) return;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (&process_pool[i] == proc) {
+            if (proc->page_directory &&
+                proc->page_directory != paging_kernel_cr3() &&
+                proc->page_directory != paging_current_cr3()) {
+                paging_destroy_process_space(proc->page_directory, proc->app_physical_slot);
+            }
+            memset(proc, 0, sizeof(*proc));
             process_used[i] = 0;
             return;
         }
@@ -108,6 +121,9 @@ static void reap_dead_processes(void) {
             if (prev) prev->next = p->next;
             else process_list = p->next;
             p = p->next;
+            klog_write_pair("process reap ", dead->name);
+            tlx_process_release(dead);
+            if (dead->win) { win_destroy(dead->win); dead->win = 0; }
             free_process_slot(dead);
             continue;
         }
@@ -120,7 +136,7 @@ static unsigned int stack_base_for(Process* proc) {
     if (!proc) return 0;
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (&process_pool[i] == proc) {
-            return (unsigned int)&process_stacks[i][0];
+            return MP_PROCESS_STACK_BASE + (unsigned int)i * STACK_SIZE;
         }
     }
     return 0;
@@ -156,6 +172,10 @@ void process_init() {
     kernel_proc->esp = 0;        // 当前正在运行，ESP 在 CPU 寄存器里，暂存 0
     kernel_proc->wake_tick = 0;
     kernel_proc->total_ticks = 0;
+    kernel_proc->page_directory = paging_kernel_cr3();
+    kernel_proc->app_physical_slot = -1;
+    kernel_proc->image_inode = 0;
+    kernel_proc->instance_id = 0;
     kernel_proc->sandbox_level = 0;
     kernel_proc->focus_state_cache = -1;
     reset_time_slice(kernel_proc);
@@ -170,7 +190,9 @@ void process_init() {
 }
 
 int process_create(void (*entry_point)(), const char* name, Window* win,
-                   unsigned int code_base, unsigned int code_limit) {
+                   unsigned int code_base, unsigned int code_limit,
+                   unsigned int page_directory, int app_physical_slot,
+                   unsigned int image_inode, unsigned int instance_id) {
     Process* new_proc = alloc_process_slot();
     if (!new_proc) return 0;
     new_proc->pid = next_pid++;
@@ -204,6 +226,10 @@ int process_create(void (*entry_point)(), const char* name, Window* win,
         return 0;
     }
     new_proc->stack_base = stack;
+    new_proc->page_directory = page_directory ? page_directory : paging_kernel_cr3();
+    new_proc->app_physical_slot = app_physical_slot;
+    new_proc->image_inode = image_inode;
+    new_proc->instance_id = instance_id;
     
     // 初始化栈内容，模拟中断现场
     // 栈是从高地址向低地址增长的
@@ -249,6 +275,7 @@ void process_exit() {
     // 实际 OS 需要回收资源
     if (current_process->pid == 0) return; // 内核进程不能退出
 
+    klog_write_pair("process exit ", current_process->name);
     tlx_process_release(current_process);
 
     if (current_process->win) {
@@ -325,6 +352,16 @@ Process* process_find_by_name(const char* name) {
     return 0;
 }
 
+Process* process_find_by_image_inode(unsigned int inode_num) {
+    Process* p = process_list;
+    if (!inode_num) return 0;
+    while (p) {
+        if (p->state != PROCESS_DEAD && p->image_inode == inode_num) return p;
+        p = p->next;
+    }
+    return 0;
+}
+
 int process_has_live_user_process(void) {
     Process* p = process_list;
     while (p) {
@@ -338,34 +375,26 @@ int process_has_live_user_process(void) {
 
 
 
-// Priority-aware next process selection.
-// Picks the runnable process with the lowest priority value (highest priority).
-// Falls back to round-robin among equal-priority processes.
 static Process* process_pick_next(Process* after) {
-    Process* p;
-    Process* best = 0;
-    int best_prio = 0x7FFFFFFF;
-
-    if (!after) return 0;
-
-    // Scan the entire process list for the best candidate
-    p = process_list;
-    while (p) {
-        if (p != after && is_runnable(p)) {
-            if (p->priority < best_prio) {
-                best_prio = p->priority;
-                best = p;
-            }
-        }
-        p = p->next;
+    int runnable[MAX_PROCESSES];
+    int priorities[MAX_PROCESSES];
+    int after_index = process_slot_index(after);
+    int picked;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        runnable[i] = process_used[i] && is_runnable(&process_pool[i]);
+        priorities[i] = process_pool[i].priority;
     }
+    picked = sched_pick_next_index(runnable, priorities, MAX_PROCESSES, after_index);
+    return picked >= 0 ? &process_pool[picked] : 0;
+}
 
-    // If nothing found after 'after', consider 'after' itself (if runnable)
-    if (!best && is_runnable(after)) {
-        best = after;
+static int has_higher_priority_runnable(const Process* current) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_used[i] && &process_pool[i] != current &&
+            is_runnable(&process_pool[i]) &&
+            process_pool[i].priority < current->priority) return 1;
     }
-
-    return best;
+    return 0;
 }
 
 int process_set_priority(int pid, int priority) {
@@ -406,6 +435,8 @@ int process_get_info_list(ProcessInfo* buffer, int max_count) {
         buffer[count].state = (int)p->state;
         buffer[count].priority = p->priority;
         buffer[count].total_ticks = p->total_ticks;
+        buffer[count].instance_id = p->instance_id;
+        buffer[count].window_id = p->win ? p->win->id : 0;
         count++;
         p = p->next;
     }
@@ -425,20 +456,12 @@ unsigned int process_schedule(unsigned int current_esp) {
     current_process->esp = current_esp;
     reap_dead_processes();
 
+    keep_current = prev_process->state == PROCESS_RUNNING &&
+                   prev_process->time_slice_remaining > 0 &&
+                   !has_higher_priority_runnable(prev_process);
+    if (keep_current) return prev_process->esp;
+    if (prev_process->state == PROCESS_RUNNING) prev_process->state = PROCESS_READY;
     next = process_pick_next(prev_process);
-
-    keep_current = 0;
-    if (prev_process->state == PROCESS_RUNNING &&
-        prev_process->time_slice_remaining > 0 &&
-        (!next || next == prev_process)) {
-        keep_current = 1;
-    }
-    if (prev_process->state == PROCESS_RUNNING && !keep_current) {
-        prev_process->state = PROCESS_READY;
-    }
-    if (prev_process->state == PROCESS_RUNNING && keep_current) {
-        return prev_process->esp;
-    }
 
     // 2. 选择下一个 READY/RUNNING 的进程
     if (!next && is_runnable(prev_process)) {
@@ -473,6 +496,7 @@ unsigned int process_schedule(unsigned int current_esp) {
     }
     if (next != current_process) {
         current_process = next;
+        paging_switch(current_process->page_directory);
         // 绑定当前窗口上下文 (用于 syscall)
         // 现在 syscall.c 中没有全局变量了，直接通过 current_process->win 获取
     }

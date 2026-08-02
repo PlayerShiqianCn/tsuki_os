@@ -4,6 +4,8 @@
 #include "disk.h"
 #include "heap.h"
 #include "font8x8_basic.h"
+#include "irq.h"
+#include "paging.h"
 
 #define VBE_DISPI_IOPORT_INDEX  0x01CE
 #define VBE_DISPI_IOPORT_DATA   0x01CF
@@ -30,7 +32,9 @@ static int video_vbe_ready = 0;
 static unsigned int video_lfb_base = VBE_LFB_ADDRESS;
 static int video_fb_width = FRAMEBUFFER_WIDTH;
 static int video_fb_height = FRAMEBUFFER_HEIGHT;
-static int video_redraw_pending = 1;
+static DamageQueue video_damage;
+static DamageRect video_clip = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
+static VideoStats video_stats;
 static int video_last_content_x = -1;
 static int video_last_content_y = -1;
 static int video_last_content_w = -1;
@@ -216,6 +220,11 @@ static int try_enable_vbe_lfb(int width, int height) {
     if (!lfb) {
         return 0;
     }
+    if (paging_is_enabled() &&
+        !paging_map_identity_range(lfb,
+            FRAMEBUFFER_MAX_WIDTH * FRAMEBUFFER_MAX_HEIGHT * sizeof(unsigned int))) {
+        return 0;
+    }
 
     video_lfb_base = lfb;
 
@@ -234,6 +243,9 @@ unsigned int video_color_to_rgb(unsigned char color) {
 void video_init() {
     unsigned int fill = video_color_to_rgb(C_CYAN);
     unsigned int* back = video_back_buffer();
+    damage_init(&video_damage, SCREEN_WIDTH, SCREEN_HEIGHT);
+    memset(&video_stats, 0, sizeof(video_stats));
+    video_reset_clip();
 
     video_vbe_ready = try_enable_vbe_lfb(video_fb_width, video_fb_height);
     if (!video_vbe_ready) {
@@ -252,7 +264,7 @@ void video_init() {
     }
 
     video_invalidate_layout();
-    video_redraw_pending = 1;
+    video_request_redraw();
 }
 
 int video_set_resolution(int w, int h) {
@@ -274,7 +286,7 @@ int video_set_resolution(int w, int h) {
         }
     }
     video_invalidate_layout();
-    video_redraw_pending = 1;
+    video_request_redraw();
     return 1;
 }
 
@@ -284,17 +296,70 @@ void video_get_resolution(int* w, int* h) {
 }
 
 void video_request_redraw(void) {
-    video_redraw_pending = 1;
+    unsigned int flags = irq_save_disable();
+    damage_add_full(&video_damage);
+    irq_restore(flags);
 }
 
-int video_consume_redraw(void) {
-    int pending = video_redraw_pending;
-    video_redraw_pending = 0;
+void video_invalidate_rect(int x, int y, int w, int h) {
+    unsigned int flags = irq_save_disable();
+    damage_add(&video_damage, x, y, w, h);
+    irq_restore(flags);
+}
+
+int video_has_damage(void) {
+    unsigned int flags = irq_save_disable();
+    int pending = video_damage.full || video_damage.count > 0;
+    irq_restore(flags);
     return pending;
 }
 
+int video_consume_damage(DamageRect* out, int max_count) {
+    unsigned int flags = irq_save_disable();
+    int count = damage_consume(&video_damage, out, max_count);
+    irq_restore(flags);
+    return count;
+}
+
+int video_consume_redraw(void) {
+    DamageRect ignored[DAMAGE_MAX_RECTS];
+    return video_consume_damage(ignored, DAMAGE_MAX_RECTS) > 0;
+}
+
+void video_set_clip(int x, int y, int w, int h) {
+    int x1, y1;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    x1 = x + w; y1 = y + h;
+    if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
+    if (y1 > SCREEN_HEIGHT) y1 = SCREEN_HEIGHT;
+    if (w <= 0 || h <= 0 || x >= x1 || y >= y1) {
+        video_clip.x = video_clip.y = video_clip.w = video_clip.h = 0;
+        return;
+    }
+    video_clip.x = x; video_clip.y = y;
+    video_clip.w = x1 - x; video_clip.h = y1 - y;
+}
+
+void video_reset_clip(void) {
+    video_clip.x = 0; video_clip.y = 0;
+    video_clip.w = SCREEN_WIDTH; video_clip.h = SCREEN_HEIGHT;
+}
+
+void video_get_clip(DamageRect* out) { if (out) *out = video_clip; }
+
+void video_get_stats(VideoStats* out) {
+    unsigned int flags;
+    if (!out) return;
+    flags = irq_save_disable(); *out = video_stats; irq_restore(flags);
+}
+
+void video_note_idle_halt(void) { video_stats.idle_halts++; }
+
 void put_pixel_rgb(int x, int y, unsigned int rgb) {
-    if (x >= 0 && x < SCREEN_WIDTH && y >= 0 && y < SCREEN_HEIGHT) {
+    if (x >= video_clip.x && x < video_clip.x + video_clip.w &&
+        y >= video_clip.y && y < video_clip.y + video_clip.h &&
+        x >= 0 && x < SCREEN_WIDTH && y >= 0 && y < SCREEN_HEIGHT) {
         video_back_buffer()[y * SCREEN_WIDTH + x] = rgb & 0x00FFFFFFu;
     }
 }
@@ -314,9 +379,13 @@ void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
     x0 = x < 0 ? 0 : x;
     y0 = y < 0 ? 0 : y;
     x1 = x + w;
-    if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
     y1 = y + h;
+    if (x0 < video_clip.x) x0 = video_clip.x;
+    if (y0 < video_clip.y) y0 = video_clip.y;
+    if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
     if (y1 > SCREEN_HEIGHT) y1 = SCREEN_HEIGHT;
+    if (x1 > video_clip.x + video_clip.w) x1 = video_clip.x + video_clip.w;
+    if (y1 > video_clip.y + video_clip.h) y1 = video_clip.y + video_clip.h;
     if (x0 >= x1 || y0 >= y1) return;
 
     buf = video_back_buffer();
@@ -386,7 +455,9 @@ void draw_char(int x, int y, char c, unsigned char color) {
         for (j = 0; j < 8; j++) {
             if (((row_bits >> j) & 1) != 0) {
                 int px = x + j;
-                if (px >= 0 && px < SCREEN_WIDTH)
+                if (px >= video_clip.x && px < video_clip.x + video_clip.w &&
+                    py >= video_clip.y && py < video_clip.y + video_clip.h &&
+                    px >= 0 && px < SCREEN_WIDTH)
                     buf[py * SCREEN_WIDTH + px] = rgb;
             }
         }
@@ -401,15 +472,37 @@ void draw_string(int x, int y, char* str, unsigned char color) {
     }
 }
 
-void video_swap_buffer() {
+void video_swap_buffer_damage(const DamageRect* rects, int count) {
     unsigned int* back = video_back_buffer();
+    DamageRect full = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
+    const DamageRect* active = rects;
+    int active_count = count;
+
+    if (!rects || count <= 0) return;
+    video_stats.frames++;
+    for (int i = 0; i < count; i++) {
+        video_stats.damaged_logical_pixels += (unsigned int)(rects[i].w * rects[i].h);
+    }
+    if (count == 1 && rects[0].x == 0 && rects[0].y == 0 &&
+        rects[0].w == SCREEN_WIDTH && rects[0].h == SCREEN_HEIGHT) {
+        video_stats.full_redraws++;
+    }
 
     if (!video_vbe_ready) {
         unsigned char* vga = (unsigned char*)VGA_ADDRESS;
-        int total = SCREEN_WIDTH * SCREEN_HEIGHT;
-        int i;
-        for (i = 0; i < total; i++) {
-            vga[i] = video_rgb_to_index(back[i]);
+        for (int r = 0; r < count; r++) {
+            int x0 = rects[r].x < 0 ? 0 : rects[r].x;
+            int y0 = rects[r].y < 0 ? 0 : rects[r].y;
+            int x1 = rects[r].x + rects[r].w;
+            int y1 = rects[r].y + rects[r].h;
+            if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
+            if (y1 > SCREEN_HEIGHT) y1 = SCREEN_HEIGHT;
+            for (int y = y0; y < y1; y++) {
+                for (int x = x0; x < x1; x++) {
+                    vga[y * SCREEN_WIDTH + x] = video_rgb_to_index(back[y * SCREEN_WIDTH + x]);
+                    video_stats.framebuffer_pixels_written++;
+                }
+            }
         }
         return;
     }
@@ -418,9 +511,9 @@ void video_swap_buffer() {
         volatile unsigned int* fb = video_framebuffer();
         int content_w = video_fb_width;
         int content_h = (video_fb_width * SCREEN_HEIGHT) / SCREEN_WIDTH;
-        int offset_x, offset_y;
+        int offset_x;
+        int offset_y;
         int layout_changed;
-        int y;
 
         if (content_h > video_fb_height) {
             content_h = video_fb_height;
@@ -428,45 +521,62 @@ void video_swap_buffer() {
         }
         if (content_w < 1) content_w = 1;
         if (content_h < 1) content_h = 1;
-
         offset_x = (video_fb_width - content_w) / 2;
         offset_y = (video_fb_height - content_h) / 2;
-
         layout_changed = (offset_x != video_last_content_x ||
                           offset_y != video_last_content_y ||
                           content_w != video_last_content_w ||
                           content_h != video_last_content_h);
 
         if (layout_changed) {
-            int i; int total = video_fb_width * video_fb_height;
-            for (i = 0; i < total; i++) {
-                fb[i] = 0x00000000u;
-            }
+            int total = video_fb_width * video_fb_height;
+            for (int i = 0; i < total; i++) fb[i] = 0;
+            video_stats.framebuffer_pixels_written += (unsigned int)total;
             video_last_content_x = offset_x;
             video_last_content_y = offset_y;
             video_last_content_w = content_w;
             video_last_content_h = content_h;
+            scale_lut_valid = 0;
+            active = &full;
+            active_count = 1;
         }
 
-        /* Rebuild lookup tables when dimensions change */
-        if (!scale_lut_valid || content_w != video_last_content_w || content_h != video_last_content_h) {
-            rebuild_scale_lut(content_w, content_h);
-        }
+        if (!scale_lut_valid) rebuild_scale_lut(content_w, content_h);
 
-        /* Scaled blit using precomputed LUT - no per-pixel division */
-        {
-            int fb_pitch = video_fb_width;
-            for (y = 0; y < content_h; y++) {
-                int src_y = scale_y_lut[y];
+        for (int r = 0; r < active_count; r++) {
+            int sx0 = active[r].x < 0 ? 0 : active[r].x;
+            int sy0 = active[r].y < 0 ? 0 : active[r].y;
+            int sx1 = active[r].x + active[r].w;
+            int sy1 = active[r].y + active[r].h;
+            int dx0, dy0, dx1, dy1;
+            if (sx1 > SCREEN_WIDTH) sx1 = SCREEN_WIDTH;
+            if (sy1 > SCREEN_HEIGHT) sy1 = SCREEN_HEIGHT;
+            if (sx0 >= sx1 || sy0 >= sy1) continue;
+            dx0 = (sx0 * content_w + SCREEN_WIDTH - 1) / SCREEN_WIDTH;
+            dy0 = (sy0 * content_h + SCREEN_HEIGHT - 1) / SCREEN_HEIGHT;
+            dx1 = (sx1 * content_w + SCREEN_WIDTH - 1) / SCREEN_WIDTH;
+            dy1 = (sy1 * content_h + SCREEN_HEIGHT - 1) / SCREEN_HEIGHT;
+            if (dx1 > content_w) dx1 = content_w;
+            if (dy1 > content_h) dy1 = content_h;
+
+            for (int y = dy0; y < dy1; y++) {
+                int src_y = scale_lut_valid ? scale_y_lut[y] : (y * SCREEN_HEIGHT) / content_h;
                 unsigned int* src_row = back + src_y * SCREEN_WIDTH;
-                volatile unsigned int* dst = fb + (offset_y + y) * fb_pitch + offset_x;
-                int x;
-                for (x = 0; x < content_w; x++) {
-                    dst[x] = src_row[scale_x_lut[x]];
+                volatile unsigned int* dst =
+                    fb + (offset_y + y) * video_fb_width + offset_x + dx0;
+                for (int x = dx0; x < dx1; x++) {
+                    int src_x = scale_lut_valid ? scale_x_lut[x] : (x * SCREEN_WIDTH) / content_w;
+                    *dst++ = src_row[src_x];
+                    video_stats.framebuffer_pixels_written++;
                 }
             }
         }
     }
+}
+
+void video_swap_buffer() {
+    DamageRect full = {0, 0, SCREEN_WIDTH, SCREEN_HEIGHT};
+    video_swap_buffer_damage(&full, 1);
 }
 
 void draw_pixel(int x, int y, unsigned char color) {

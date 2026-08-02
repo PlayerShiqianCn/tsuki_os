@@ -42,6 +42,8 @@ SETTINGS_TSK_ADDR = $(call tsk_slot_addr,5)
 
 KERNEL_C_SRCS = \
 	kernel/idt.c \
+	kernel/core.c \
+	kernel/paging.c \
 	kernel/kernel.c \
 	kernel/config.c \
 	kernel/desktop.c \

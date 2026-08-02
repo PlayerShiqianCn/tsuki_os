@@ -9,10 +9,11 @@ void exit();
 void print(const char* str);
 void sleep(int ticks);
 unsigned int get_ticks(void);
-int read_file(const char* filename, void* buffer);
+int read_file(const char* filename, void* buffer, unsigned int capacity);
 int write_file(const char* filename, const void* buffer, int size);
 void draw_rect(int x, int y, int w, int h, int color);
 void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb);
+int draw_rgb(const RgbBlitArgs* args);
 void draw_text(int x, int y, const char* str, int color);
 int get_key(void);
 void set_sandbox(int level);
@@ -23,6 +24,8 @@ int win_get_event(void);
 int list_files(char* buffer, int max_len);
 int list_files_at(char* buffer, int max_len, const char* dir);
 int launch_tsk(const char* filename);
+int launch_tsk_ex(const char* filename, int flags);
+int get_video_stats(UserVideoStats* out);
 int get_mouse_click(int* x, int* y);
 
 // Start Menu Tile API
@@ -42,6 +45,8 @@ typedef struct {
     int state;
     int priority;
     unsigned int total_ticks;
+    unsigned int instance_id;
+    int window_id;
 } ProcessInfo;
 
 
