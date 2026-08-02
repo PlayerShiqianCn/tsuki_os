@@ -149,7 +149,7 @@ int desktop_handle_taskbar_click(int mx, int my) {
         klog_write("start click");
         if (!console_launch_tsk("system/start.tsk")) {
             klog_write("start launch failed");
-            kpanic("cannot launch system/start.tsk");
+            /* 不 panic，让用户继续操作 */
         }
         return 1;
     }
