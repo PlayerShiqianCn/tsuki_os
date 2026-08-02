@@ -2,14 +2,14 @@
 
 CROSS ?= $(shell if command -v i686-linux-gnu-gcc >/dev/null 2>&1; then echo i686-linux-gnu-; fi)
 
-CFLAGS = -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g -Iinclude
+CFLAGS = -DTSUKI_OS_VERSION="\"$(PRODUCT_VERSION)\"" -ffreestanding -fno-pie -Wall -Wextra -nostdlib -nodefaultlibs -nostartfiles -g -Iinclude
 ifeq ($(CROSS),)
   CFLAGS += -m32
 endif
 KERNEL_LDFLAGS = -m elf_i386 -T boot/link.ld
 BUILD_DIR = build
 MP_HEADER = include/mp.h
-PRODUCT_VERSION = 0.3.0-project_teamo-alpha
+PRODUCT_VERSION = 0.4.0-foundation
 VERSION_COUNTER = $(BUILD_DIR)/.build_version
 FS_ROOT = $(BUILD_DIR)/fsroot
 TSK_SLOT_BASE = $(shell awk '/MP_APP_SLOT_BASE/ { gsub(/u/, "", $$3); print $$3; exit }' $(MP_HEADER))
@@ -42,6 +42,8 @@ SETTINGS_TSK_ADDR = $(call tsk_slot_addr,5)
 
 KERNEL_C_SRCS = \
 	kernel/idt.c \
+	kernel/core.c \
+	kernel/paging.c \
 	kernel/kernel.c \
 	kernel/config.c \
 	kernel/desktop.c \

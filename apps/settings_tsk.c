@@ -240,7 +240,7 @@ static void load_config(void) {
     int screen_h = res_heights[0];
 
     set_defaults();
-    read = read_file("system/config.rtsk", buf);
+    read = read_file("system/config.rtsk", buf, sizeof(buf) - 1);
     if (read <= 0) {
         set_status("Config missing. Defaults used.");
         apply_runtime();
@@ -483,6 +483,7 @@ void main() {
     render();
 
     while (1) {
+        sleep(1);
         int mx;
         int my;
         int ev;

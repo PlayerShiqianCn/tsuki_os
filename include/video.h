@@ -1,6 +1,8 @@
 #ifndef VIDEO_H
 #define VIDEO_H
 
+#include "kernel_core.h"
+
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 200
 #define FRAMEBUFFER_WIDTH 640
@@ -28,6 +30,14 @@
 #define C_YELLOW 14
 #define C_WHITE 15
 
+typedef struct {
+    unsigned int frames;
+    unsigned int full_redraws;
+    unsigned int damaged_logical_pixels;
+    unsigned int framebuffer_pixels_written;
+    unsigned int idle_halts;
+} VideoStats;
+
 void video_init();
 void put_pixel(int x, int y, unsigned char color);
 void put_pixel_rgb(int x, int y, unsigned int rgb);
@@ -42,6 +52,15 @@ int video_set_resolution(int w, int h);
 void video_get_resolution(int* w, int* h);
 void video_request_redraw(void);
 int video_consume_redraw(void);
+void video_invalidate_rect(int x, int y, int w, int h);
+int video_consume_damage(DamageRect* out, int max_count);
+int video_has_damage(void);
+void video_set_clip(int x, int y, int w, int h);
+void video_reset_clip(void);
+void video_get_clip(DamageRect* out);
+void video_swap_buffer_damage(const DamageRect* rects, int count);
+void video_get_stats(VideoStats* out);
+void video_note_idle_halt(void);
 void video_swap_buffer(); // 双缓冲交换
 
 #endif

@@ -14,6 +14,7 @@ static unsigned char fs_inode_block_buf[1024];
 static unsigned char fs_dir_block_buf[1024];
 static unsigned char fs_io_block_buf[1024];
 static unsigned int fs_indirect_entries_buf[1024 / 4];
+static unsigned int fs_write_allocated_blocks[12 + 256 + 1];
 
 #define HIDDEN_SUFFIX "._hid_"
 
@@ -291,7 +292,275 @@ static void write_block(unsigned int block_num, const void* buffer) {
     disk_write_sectors(FS_BASE_SECTOR + (block_num * 2), 2, buffer);
 }
 
-static unsigned int inode_data_capacity(const Ext2Inode* inode) {
+
+// ===== Allocation helpers (called within fs_lock) =====
+
+static int write_superblock(void) {
+    unsigned char* buf = (unsigned char*)malloc(1024);
+    if (!buf) return 0;
+    memset(buf, 0, 1024);
+    memcpy(buf, &ext2_sb, sizeof(ext2_sb));
+    disk_write_sectors(FS_BASE_SECTOR + 2, 2, buf);
+    free(buf);
+    return 1;
+}
+
+static int write_group_desc(void) {
+    unsigned char* buf = (unsigned char*)malloc(1024);
+    if (!buf) return 0;
+    memset(buf, 0, 1024);
+    memcpy(buf, &ext2_gd, sizeof(ext2_gd));
+    disk_write_sectors(FS_BASE_SECTOR + 4, 2, buf);
+    free(buf);
+    return 1;
+}
+
+static unsigned int alloc_inode(void) {
+    unsigned char* bitmap;
+    unsigned int i;
+    unsigned int total_bits;
+    unsigned int start;
+
+    if (!fs_ready) return 0;
+    bitmap = (unsigned char*)malloc(1024);
+    if (!bitmap) return 0;
+    read_block(ext2_gd.bg_inode_bitmap, bitmap);
+
+    total_bits = ext2_sb.s_inodes_per_group;
+    if (total_bits > 1024 * 8) total_bits = 1024 * 8;
+    start = ext2_sb.s_first_ino;
+    if (start < 11) start = 11;
+
+    for (i = start; i < total_bits; i++) {
+        if (!(bitmap[i / 8] & (1 << (i % 8)))) {
+            bitmap[i / 8] |= (1 << (i % 8));
+            write_block(ext2_gd.bg_inode_bitmap, bitmap);
+            free(bitmap);
+            ext2_sb.s_free_inodes_count--;
+            ext2_gd.bg_free_inodes_count--;
+            write_superblock();
+            write_group_desc();
+            return i + 1;
+        }
+    }
+    free(bitmap);
+    return 0;
+}
+
+static void free_inode(unsigned int inode_num) {
+    unsigned char* bitmap;
+    unsigned int bit;
+
+    if (!fs_ready || inode_num < 1) return;
+    bitmap = (unsigned char*)malloc(1024);
+    if (!bitmap) return;
+    read_block(ext2_gd.bg_inode_bitmap, bitmap);
+
+    bit = inode_num - 1;
+    bitmap[bit / 8] &= ~(1 << (bit % 8));
+    write_block(ext2_gd.bg_inode_bitmap, bitmap);
+    free(bitmap);
+
+    ext2_sb.s_free_inodes_count++;
+    ext2_gd.bg_free_inodes_count++;
+    write_superblock();
+    write_group_desc();
+}
+
+static unsigned int alloc_block(void) {
+    unsigned char* bitmap;
+    unsigned int i;
+    unsigned int total_bits;
+    unsigned int inode_table_blocks;
+    unsigned int first_data;
+
+    if (!fs_ready) return 0;
+    bitmap = (unsigned char*)malloc(1024);
+    if (!bitmap) return 0;
+    read_block(ext2_gd.bg_block_bitmap, bitmap);
+
+    total_bits = ext2_sb.s_blocks_count;
+    if (total_bits > 1024 * 8) total_bits = 1024 * 8;
+
+    inode_table_blocks = (ext2_sb.s_inodes_per_group * ext2_sb.s_inode_size) / 1024;
+    first_data = ext2_gd.bg_inode_table + inode_table_blocks;
+
+    for (i = first_data; i < total_bits; i++) {
+        if (!(bitmap[i / 8] & (1 << (i % 8)))) {
+            unsigned char* zero_buf;
+            bitmap[i / 8] |= (1 << (i % 8));
+            write_block(ext2_gd.bg_block_bitmap, bitmap);
+            free(bitmap);
+
+            ext2_sb.s_free_blocks_count--;
+            ext2_gd.bg_free_blocks_count--;
+            write_superblock();
+            write_group_desc();
+
+            zero_buf = (unsigned char*)malloc(1024);
+            if (zero_buf) {
+                memset(zero_buf, 0, 1024);
+                write_block(i, zero_buf);
+                free(zero_buf);
+            }
+            return i;
+        }
+    }
+    free(bitmap);
+    return 0;
+}
+
+static void free_block(unsigned int block_num) {
+    unsigned char* bitmap;
+
+    if (!fs_ready || block_num == 0) return;
+    bitmap = (unsigned char*)malloc(1024);
+    if (!bitmap) return;
+    read_block(ext2_gd.bg_block_bitmap, bitmap);
+
+    bitmap[block_num / 8] &= ~(1 << (block_num % 8));
+    write_block(ext2_gd.bg_block_bitmap, bitmap);
+    free(bitmap);
+
+    ext2_sb.s_free_blocks_count++;
+    ext2_gd.bg_free_blocks_count++;
+    write_superblock();
+    write_group_desc();
+}
+
+static unsigned int dir_entry_actual_size(unsigned int name_len) {
+    return (8 + name_len + 3) & ~3u;
+}
+
+static int dir_entry_bounds(const unsigned char* block, unsigned int pos,
+                            unsigned int* out_rec_len, unsigned int* out_name_len) {
+    unsigned int rec_len;
+    unsigned int name_len;
+
+    if (!block || !out_rec_len || !out_name_len) return 0;
+    if ((pos & 3u) != 0 || pos > 1024u - 8u) return 0;
+
+    rec_len = (unsigned int)block[pos + 4] |
+              ((unsigned int)block[pos + 5] << 8);
+    name_len = (unsigned int)block[pos + 6];
+
+    if (rec_len < 8 || (rec_len & 3u) != 0) return 0;
+    if (rec_len > 1024u - pos) return 0;
+    if (name_len > 255u || name_len > rec_len - 8u) return 0;
+
+    *out_rec_len = rec_len;
+    *out_name_len = name_len;
+    return 1;
+}
+
+static int add_dir_entry(unsigned int dir_inode_num, unsigned int target_inode,
+                         const char* name, unsigned char file_type) {
+    Ext2Inode dir_inode;
+    unsigned char* block_buf;
+    unsigned int pos;
+    unsigned int name_len;
+    unsigned int entry_len;
+
+    if (!read_inode(dir_inode_num, &dir_inode)) return 0;
+    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) return 0;
+
+    name_len = strlen(name);
+    if (name_len > 255) name_len = 255;
+    entry_len = dir_entry_actual_size(name_len);
+
+    block_buf = (unsigned char*)malloc(1024);
+    if (!block_buf) return 0;
+    read_block(dir_inode.i_block[0], block_buf);
+
+    pos = 0;
+    while (pos < 1024) {
+        Ext2DirEntry* entry;
+        unsigned int actual;
+        unsigned int next_pos;
+        unsigned int rec_len;
+        unsigned int stored_name_len;
+
+        if (!dir_entry_bounds(block_buf, pos, &rec_len, &stored_name_len)) {
+            free(block_buf);
+            return 0;
+        }
+        entry = (Ext2DirEntry*)(block_buf + pos);
+        actual = dir_entry_actual_size(stored_name_len);
+        next_pos = pos + rec_len;
+
+        if (next_pos == 1024) {
+            unsigned int new_pos = pos + actual;
+            if (new_pos + entry_len <= 1024) {
+                Ext2DirEntry* ne;
+                entry->rec_len = (unsigned short)actual;
+                ne = (Ext2DirEntry*)(block_buf + new_pos);
+                ne->inode = target_inode;
+                ne->rec_len = (unsigned short)(1024 - new_pos);
+                ne->name_len = (unsigned char)name_len;
+                ne->file_type = file_type;
+                memcpy(ne->name, name, (int)name_len);
+                write_block(dir_inode.i_block[0], block_buf);
+                free(block_buf);
+                return 1;
+            }
+            break;
+        }
+        pos = next_pos;
+    }
+
+    free(block_buf);
+    return 0;
+}
+
+static int remove_dir_entry(unsigned int dir_inode_num, const char* name) {
+    Ext2Inode dir_inode;
+    unsigned char* block_buf;
+    unsigned int pos = 0;
+    unsigned int prev_pos = 0;
+
+    if (!read_inode(dir_inode_num, &dir_inode)) return 0;
+    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) return 0;
+
+    block_buf = (unsigned char*)malloc(1024);
+    if (!block_buf) return 0;
+    read_block(dir_inode.i_block[0], block_buf);
+
+    while (pos < 1024) {
+        Ext2DirEntry* entry;
+        char entry_name[256];
+        unsigned int rec_len;
+        unsigned int name_len;
+        unsigned int i;
+
+        if (!dir_entry_bounds(block_buf, pos, &rec_len, &name_len)) {
+            free(block_buf);
+            return 0;
+        }
+        entry = (Ext2DirEntry*)(block_buf + pos);
+        for (i = 0; i < name_len; i++) entry_name[i] = entry->name[i];
+        entry_name[i] = '\0';
+
+        if (entry->inode != 0 && strcmp(entry_name, name) == 0) {
+            if (prev_pos == pos) {
+                entry->inode = 0;
+            } else {
+                Ext2DirEntry* prev_entry = (Ext2DirEntry*)(block_buf + prev_pos);
+                prev_entry->rec_len = (unsigned short)(prev_entry->rec_len + rec_len);
+            }
+            write_block(dir_inode.i_block[0], block_buf);
+            free(block_buf);
+            return 1;
+        }
+
+        prev_pos = pos;
+        pos += rec_len;
+    }
+
+    free(block_buf);
+    return 0;
+}
+
+static unsigned int __attribute__((unused)) inode_data_capacity(const Ext2Inode* inode) {
     unsigned int blocks = 0;
 
     if (!inode) return 0;
@@ -319,35 +588,34 @@ static unsigned int inode_data_capacity(const Ext2Inode* inode) {
 // 内部：在目录中查找文件名
 static int find_file_in_dir(const char* filename, unsigned int dir_inode_num) {
     Ext2Inode dir_inode;
-    if (!read_inode(dir_inode_num, &dir_inode)) {
+    unsigned int pos = 0;
+
+    if (!filename || !read_inode(dir_inode_num, &dir_inode)) {
         klog_write("read inode fail");
         return 0;
     }
-
-    if ((dir_inode.i_mode & 0xF000) != 0x4000) {
+    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) {
         klog_write("not a dir");
         return 0;
     }
-    // 读取目录的第一个块
-    read_block(dir_inode.i_block[0], fs_dir_block_buf);
-    
-    unsigned int pos = 0;
-    while (pos < 1024) {
-        Ext2DirEntry* entry = (Ext2DirEntry*)(fs_dir_block_buf + pos);
-        if (entry->rec_len == 0) break; // 防止死循环
 
-        // 提取文件名用于比较
+    read_block(dir_inode.i_block[0], fs_dir_block_buf);
+    while (pos < 1024) {
+        Ext2DirEntry* entry;
+        unsigned int rec_len;
+        unsigned int name_len;
         char name[256];
-        int name_len = entry->name_len;
-        for(int i=0; i<name_len; i++) name[i] = entry->name[i];
-        name[name_len] = '\0';
-        
-        if (strcmp(name, filename) == 0) {
-            unsigned int inode_num = entry->inode;
-            return inode_num;
+
+        if (!dir_entry_bounds(fs_dir_block_buf, pos, &rec_len, &name_len)) {
+            klog_write("bad dir entry");
+            return 0;
         }
-        
-        pos += entry->rec_len;
+        entry = (Ext2DirEntry*)(fs_dir_block_buf + pos);
+        for (unsigned int i = 0; i < name_len; i++) name[i] = entry->name[i];
+        name[name_len] = '\0';
+
+        if (entry->inode != 0 && strcmp(name, filename) == 0) return entry->inode;
+        pos += rec_len;
     }
 
     klog_write_pair("dir miss ", filename);
@@ -436,9 +704,7 @@ static int read_inode_range_locked(const Ext2Inode* inode, unsigned int start_po
     if (start_pos >= file_size) return 0;
 
     limit = size;
-    if (start_pos + limit > file_size) {
-        limit = file_size - start_pos;
-    }
+    if (limit > file_size - start_pos) limit = file_size - start_pos;
 
     while (bytes_read < limit) {
         unsigned int block_num = 0;
@@ -482,7 +748,7 @@ static int read_inode_range_locked(const Ext2Inode* inode, unsigned int start_po
 }
 
 // 支持 ext2 风格的 12 个直接块 + 1 个一级间接块
-int fs_read_file(const char* filename, void* buffer) {
+int fs_read_file(const char* filename, void* buffer, unsigned int capacity) {
     SystemFile file;
     Ext2Inode inode;
     int ret;
@@ -497,7 +763,7 @@ int fs_read_file(const char* filename, void* buffer) {
         return 0;
     }
 
-    ret = read_inode_range_locked(&inode, 0, inode.i_size, buffer);
+    ret = read_inode_range_locked(&inode, 0, capacity, buffer);
     fs_lock_leave();
     return ret;
 }
@@ -505,90 +771,117 @@ int fs_read_file(const char* filename, void* buffer) {
 int fs_write_file(const char* filename, const void* buffer, unsigned int size) {
     SystemFile file;
     Ext2Inode inode;
-    unsigned int capacity;
     unsigned int* indirect_entries = 0;
-    unsigned char* block_buf;
+    unsigned int* allocated_blocks = fs_write_allocated_blocks;
+    unsigned char* block_buf = fs_io_block_buf;
     const unsigned char* src = (const unsigned char*)buffer;
-    unsigned int remaining = size;
-    unsigned int total_blocks;
+    unsigned int blocks_needed;
+    unsigned int allocated_count = 0;
+    unsigned int block_index;
+    unsigned int max_file_size = (12u + 256u) * 1024u;
+    int result = 0;
 
     fs_lock_enter();
-    if (!filename) {
-        fs_lock_leave();
-        return 0;
-    }
-    if (size > 0 && !buffer) {
-        fs_lock_leave();
-        return 0;
-    }
-    if (!sys_file_open(filename, &file)) {
-        fs_lock_leave();
-        return 0;
-    }
-    if (file.type != 0) {
-        fs_lock_leave();
-        return 0;
-    }
-    if (!read_inode(file.inode_num, &inode)) {
-        fs_lock_leave();
-        return 0;
-    }
+    if (!filename || (size > 0 && !buffer) || size > max_file_size) goto out;
+    if (!sys_file_open(filename, &file) || file.type != 0) goto out;
+    if (!read_inode(file.inode_num, &inode)) goto out;
 
-    capacity = inode_data_capacity(&inode);
-    if (size > capacity) {
-        fs_lock_leave();
-        return 0;
-    }
+    blocks_needed = (size + 1023u) / 1024u;
+    if (inode.i_block[12] != 0 || blocks_needed > 12) {
+        indirect_entries = fs_indirect_entries_buf;
 
-    if (inode.i_block[12] != 0) {
-        indirect_entries = (unsigned int*)malloc(1024);
-        if (!indirect_entries) {
-            fs_lock_leave();
-            return 0;
+        if (inode.i_block[12] != 0) {
+            read_block(inode.i_block[12], indirect_entries);
+        } else {
+            unsigned int indirect_block = alloc_block();
+            if (!indirect_block) goto rollback;
+            inode.i_block[12] = indirect_block;
+            allocated_blocks[allocated_count++] = indirect_block;
+            memset(indirect_entries, 0, 1024);
         }
-        read_block(inode.i_block[12], indirect_entries);
     }
 
-    block_buf = (unsigned char*)malloc(1024);
-    if (!block_buf) {
-        if (indirect_entries) free(indirect_entries);
-        fs_lock_leave();
-        return 0;
-    }
-
-    total_blocks = capacity / 1024;
-    for (unsigned int block_index = 0; block_index < total_blocks; block_index++) {
+    // Reserve every missing block before overwriting existing file data.
+    for (block_index = 0; block_index < blocks_needed; block_index++) {
+        unsigned int* slot;
         unsigned int block_num;
-        unsigned int copy_len = 0;
 
         if (block_index < 12) {
-            block_num = inode.i_block[block_index];
+            slot = &inode.i_block[block_index];
         } else {
-            if (!indirect_entries) break;
-            block_num = indirect_entries[block_index - 12];
+            if (!indirect_entries) goto rollback;
+            slot = &indirect_entries[block_index - 12];
         }
-        if (block_num == 0) break;
 
-        memset(block_buf, 0, 1024);
-        if (remaining > 0) {
-            copy_len = remaining > 1024 ? 1024 : remaining;
-            memcpy(block_buf, src, copy_len);
-            src += copy_len;
-            remaining -= copy_len;
-        }
-        write_block(block_num, block_buf);
+        if (*slot != 0) continue;
+        block_num = alloc_block();
+        if (!block_num) goto rollback;
+        *slot = block_num;
+        allocated_blocks[allocated_count++] = block_num;
     }
 
-    free(block_buf);
-    if (indirect_entries) free(indirect_entries);
+    if (blocks_needed > 0) {
+        unsigned int remaining = size;
+
+        for (block_index = 0; block_index < blocks_needed; block_index++) {
+            unsigned int block_num;
+            unsigned int copy_len = remaining > 1024u ? 1024u : remaining;
+
+            block_num = block_index < 12
+                ? inode.i_block[block_index]
+                : indirect_entries[block_index - 12];
+            if (!block_num) goto rollback;
+
+            memset(block_buf, 0, 1024);
+            if (copy_len > 0) {
+                memcpy(block_buf, src, (int)copy_len);
+                src += copy_len;
+                remaining -= copy_len;
+            }
+            write_block(block_num, block_buf);
+        }
+    }
+
+    // Truncation releases blocks that no longer belong to the file.
+    for (block_index = blocks_needed; block_index < 12; block_index++) {
+        if (inode.i_block[block_index] != 0) {
+            free_block(inode.i_block[block_index]);
+            inode.i_block[block_index] = 0;
+        }
+    }
+
+    if (indirect_entries) {
+        unsigned int first_unused = blocks_needed > 12 ? blocks_needed - 12 : 0;
+        for (block_index = first_unused; block_index < 256; block_index++) {
+            if (indirect_entries[block_index] != 0) {
+                free_block(indirect_entries[block_index]);
+                indirect_entries[block_index] = 0;
+            }
+        }
+
+        if (blocks_needed > 12) {
+            write_block(inode.i_block[12], indirect_entries);
+        } else if (inode.i_block[12] != 0) {
+            free_block(inode.i_block[12]);
+            inode.i_block[12] = 0;
+        }
+    }
 
     inode.i_size = size;
-    if (!write_inode(file.inode_num, &inode)) {
-        fs_lock_leave();
-        return 0;
+    inode.i_blocks = blocks_needed * 2u + (inode.i_block[12] ? 2u : 0u);
+    if (!write_inode(file.inode_num, &inode)) goto out;
+
+    result = (int)size;
+    goto out;
+
+rollback:
+    while (allocated_count > 0) {
+        free_block(allocated_blocks[--allocated_count]);
     }
+
+out:
     fs_lock_leave();
-    return (int)size;
+    return result;
 }
 
 // App 读取接口 (支持流式读取)
@@ -598,11 +891,12 @@ int app_file_read(AppFile* file, void* buffer, unsigned int size) {
 
     if (!fs_ready || !file) return 0;
     
-    unsigned int bytes_to_read = size;
-    // 防止读越界
-    if (file->current_pos + size > file->sys_file.size) {
+    unsigned int bytes_to_read;
+    if (file->current_pos >= file->sys_file.size) return 0;
+
+    bytes_to_read = size;
+    if (bytes_to_read > file->sys_file.size - file->current_pos)
         bytes_to_read = file->sys_file.size - file->current_pos;
-    }
     
     if (bytes_to_read == 0) return 0;
 
@@ -622,156 +916,346 @@ int app_file_read(AppFile* file, void* buffer, unsigned int size) {
     return bytes_read;
 }
 
-int tsk_load(const char* filename, void** out_entry,
-             unsigned int* out_load_base, unsigned int* out_image_size) {
-    AppFile file;
-    char actual_name[FS_FILENAME_LEN];
-    int read_result;
-    int header_bytes;
-    TskHeader header;
-    unsigned int raw_size;
-    unsigned int load_addr_value;
-    void* load_addr;
-    unsigned char* image_buf = 0;
-
-    if (!filename || !out_entry) return 0;
-    if (out_load_base) *out_load_base = 0;
-    if (out_image_size) *out_image_size = 0;
-    copy_trim_hidden_suffix(actual_name, filename, sizeof(actual_name));
-
-    // 1. 打开文件
-    if (!app_file_open(actual_name, &file)) {
+static int open_tsk_with_hidden_alias(const char* filename, AppFile* file,
+                                      char actual_name[FS_FILENAME_LEN]) {
+    if (!filename || !file || !actual_name) return 0;
+    copy_trim_hidden_suffix(actual_name, filename, FS_FILENAME_LEN);
+    if (!app_file_open(actual_name, file)) {
         klog_write_pair("open miss ", actual_name);
-        // 对隐藏文件提供回退：<name> 不存在时尝试 <name>._hid_
         if (!str_ends_with(filename, HIDDEN_SUFFIX)) {
             int n = strlen(actual_name);
             int sfx = strlen(HIDDEN_SUFFIX);
             if (n + sfx < FS_FILENAME_LEN) {
-                for (int i = 0; i < sfx; i++) {
-                    actual_name[n + i] = HIDDEN_SUFFIX[i];
-                }
+                for (int i = 0; i < sfx; i++) actual_name[n + i] = HIDDEN_SUFFIX[i];
                 actual_name[n + sfx] = '\0';
             }
         }
-
-        if (!app_file_open(actual_name, &file)) {
+        if (!app_file_open(actual_name, file)) {
             klog_write_pair("open fail ", actual_name);
             return 0;
         }
     }
     klog_write_pair("open ok ", actual_name);
-    
-    // 2. 获取文件大小
-    raw_size = file.sys_file.size;
-    if (raw_size == 0) {
-        klog_write_pair("size zero ", actual_name);
-        return 0;
-    }
+    return 1;
+}
 
-    // 3. 优先解析新的 TSK2 头部，按镜像元数据加载
+int tsk_probe(const char* filename, TskImageInfo* out_info) {
+    AppFile file;
+    char actual_name[FS_FILENAME_LEN];
+    TskHeader header;
+    unsigned int raw_size;
+    void* legacy_load;
+    int header_bytes;
+
+    if (!filename || !out_info) return 0;
+    memset(out_info, 0, sizeof(*out_info));
+    if (!open_tsk_with_hidden_alias(filename, &file, actual_name)) return 0;
+    raw_size = file.sys_file.size;
+    if (raw_size == 0) { klog_write_pair("size zero ", actual_name); return 0; }
+
     memset(&header, 0, sizeof(header));
     header_bytes = app_file_read(&file, &header, sizeof(header));
     if (header_bytes == (int)sizeof(header) && tsk_header_has_magic(&header)) {
-        if (header.version != TSK_VERSION) {
-            klog_write_pair("hdr ver bad ", actual_name);
+        if (header.version != TSK_VERSION || header.flags != 0 ||
+            !tsk_load_addr_valid(header.load_addr, header.image_size) ||
+            header.entry_offset >= header.image_size ||
+            raw_size < sizeof(TskHeader) ||
+            header.image_size > raw_size - sizeof(TskHeader)) {
+            klog_write_pair("hdr invalid ", actual_name);
             return 0;
         }
-        if (header.flags != 0) {
-            klog_write_pair("hdr flag bad ", actual_name);
-            return 0;
-        }
-        if (!tsk_load_addr_valid(header.load_addr, header.image_size)) {
-            klog_write_pair("hdr addr bad ", actual_name);
-            return 0;
-        }
-        if (header.entry_offset >= header.image_size) {
-            klog_write_pair("hdr entry bad ", actual_name);
-            return 0;
-        }
-        if (raw_size < sizeof(TskHeader) || header.image_size > raw_size - sizeof(TskHeader)) {
-            klog_write_pair("hdr span bad ", actual_name);
-            return 0;
-        }
+        out_info->load_addr = header.load_addr;
+        out_info->entry_offset = header.entry_offset;
+        out_info->image_size = header.image_size;
+        out_info->inode_num = file.sys_file.inode_num;
+        out_info->has_header = 1;
+        return 1;
+    }
 
-        image_buf = (unsigned char*)malloc(header.image_size);
-        if (!image_buf) {
-            klog_write_pair("hdr mem fail ", actual_name);
-            return 0;
-        }
+    if (raw_size > MP_APP_SLOT_SIZE) { klog_write_pair("size too big ", actual_name); return 0; }
+    legacy_load = resolve_app_load_address(actual_name);
+    if (!legacy_load) { klog_write_pair("slot fail ", actual_name); return 0; }
+    out_info->load_addr = (unsigned int)legacy_load;
+    out_info->entry_offset = 0;
+    out_info->image_size = raw_size;
+    out_info->inode_num = file.sys_file.inode_num;
+    out_info->has_header = 0;
+    return 1;
+}
 
-        load_addr_value = header.load_addr;
-        load_addr = (void*)load_addr_value;
-        read_result = app_file_read(&file, image_buf, header.image_size);
-        if ((unsigned int)read_result != header.image_size) {
-            free(image_buf);
-            klog_write_pair("hdr read fail ", actual_name);
-            return 0;
-        }
-        if (tsk_checksum32(image_buf, header.image_size) != header.image_checksum) {
-            free(image_buf);
-            klog_write_pair("hdr sum bad ", actual_name);
-            return 0;
-        }
+int tsk_load_to(const char* filename, void* destination, const TskImageInfo* expected) {
+    AppFile file;
+    char actual_name[FS_FILENAME_LEN];
+    TskHeader header;
+    int read_result;
 
-        memset(load_addr, 0, MP_APP_SLOT_SIZE);
-        memcpy(load_addr, image_buf, header.image_size);
-        free(image_buf);
-        if (out_load_base) *out_load_base = load_addr_value;
-        if (out_image_size) *out_image_size = header.image_size;
-        *out_entry = (void*)(load_addr_value + header.entry_offset);
+    if (!filename || !destination || !expected || expected->image_size == 0 ||
+        expected->image_size > MP_APP_SLOT_SIZE) return 0;
+    if (!open_tsk_with_hidden_alias(filename, &file, actual_name)) return 0;
+    if (file.sys_file.inode_num != expected->inode_num) {
+        klog_write_pair("inode changed ", actual_name);
+        return 0;
+    }
+
+    memset(destination, 0, MP_APP_SLOT_SIZE);
+    if (expected->has_header) {
+        memset(&header, 0, sizeof(header));
+        if (app_file_read(&file, &header, sizeof(header)) != (int)sizeof(header) ||
+            !tsk_header_has_magic(&header) || header.version != TSK_VERSION ||
+            header.flags != 0 || header.load_addr != expected->load_addr ||
+            header.entry_offset != expected->entry_offset ||
+            header.image_size != expected->image_size) {
+            klog_write_pair("hdr changed ", actual_name);
+            return 0;
+        }
+        read_result = app_file_read(&file, destination, expected->image_size);
+        if ((unsigned int)read_result != expected->image_size ||
+            tsk_checksum32((const unsigned char*)destination, expected->image_size) !=
+                header.image_checksum) {
+            memset(destination, 0, MP_APP_SLOT_SIZE);
+            klog_write_pair("hdr data bad ", actual_name);
+            return 0;
+        }
         klog_write_pair("hdr read ok ", actual_name);
         return 1;
     }
 
-    // 4. 兼容旧版：没有头部时仍按文件名映射固定槽位
     file.current_pos = 0;
-    if (raw_size > MP_APP_SLOT_SIZE) {
-        klog_write_pair("size too big ", actual_name);
-        return 0;
-    }
-
-    load_addr = resolve_app_load_address(actual_name);
-    if (!load_addr) {
-        klog_write_pair("slot fail ", actual_name);
-        return 0;
-    }
-
-    memset(load_addr, 0, MP_APP_SLOT_SIZE);
-    read_result = app_file_read(&file, load_addr, raw_size);
-    if ((unsigned int)read_result != raw_size) {
+    read_result = app_file_read(&file, destination, expected->image_size);
+    if ((unsigned int)read_result != expected->image_size) {
+        memset(destination, 0, MP_APP_SLOT_SIZE);
         klog_write_pair("read fail ", actual_name);
         return 0;
     }
     klog_write_pair("read ok ", actual_name);
-
-    if (out_load_base) *out_load_base = (unsigned int)load_addr;
-    if (out_image_size) *out_image_size = raw_size;
-    *out_entry = load_addr;
     return 1;
 }
 
+int tsk_load(const char* filename, void** out_entry,
+             unsigned int* out_load_base, unsigned int* out_image_size) {
+    TskImageInfo info;
+    if (!filename || !out_entry) return 0;
+    if (out_load_base) *out_load_base = 0;
+    if (out_image_size) *out_image_size = 0;
+    if (!tsk_probe(filename, &info) ||
+        !tsk_load_to(filename, (void*)info.load_addr, &info)) return 0;
+    if (out_load_base) *out_load_base = info.load_addr;
+    if (out_image_size) *out_image_size = info.image_size;
+    *out_entry = (void*)(info.load_addr + info.entry_offset);
+    return 1;
+}
+
+
+// ===== Public file management API =====
+
+int fs_create_file(const char* path) {
+    char dir_name[FS_FILENAME_LEN];
+    char base_name[FS_FILENAME_LEN];
+    unsigned int dir_inode_num;
+    unsigned int new_inode_num;
+    Ext2Inode new_inode;
+
+    fs_lock_enter();
+    if (!fs_ready || !path) {
+        fs_lock_leave();
+        return 0;
+    }
+    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
+        fs_lock_leave();
+        return 0;
+    }
+    dir_inode_num = EXT2_ROOT_INODE;
+    if (dir_name[0]) {
+        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
+        if (!dir_inode_num) { fs_lock_leave(); return 0; }
+    }
+    if (find_file_in_dir(base_name, dir_inode_num)) {
+        fs_lock_leave();
+        return -1;
+    }
+    new_inode_num = alloc_inode();
+    if (!new_inode_num) { fs_lock_leave(); return 0; }
+
+    memset(&new_inode, 0, sizeof(new_inode));
+    new_inode.i_mode = 0x81A4;
+    new_inode.i_size = 0;
+    new_inode.i_links_count = 1;
+    new_inode.i_blocks = 0;
+    if (!write_inode(new_inode_num, &new_inode)) {
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+    if (!add_dir_entry(dir_inode_num, new_inode_num, base_name, EXT2_FT_REG_FILE)) {
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+    fs_lock_leave();
+    return 1;
+}
+
+int fs_delete_file(const char* path) {
+    char dir_name[FS_FILENAME_LEN];
+    char base_name[FS_FILENAME_LEN];
+    unsigned int dir_inode_num;
+    unsigned int inode_num;
+    Ext2Inode inode;
+    unsigned int i;
+
+    fs_lock_enter();
+    if (!fs_ready || !path) { fs_lock_leave(); return 0; }
+    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
+        fs_lock_leave(); return 0;
+    }
+    dir_inode_num = EXT2_ROOT_INODE;
+    if (dir_name[0]) {
+        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
+        if (!dir_inode_num) { fs_lock_leave(); return 0; }
+    }
+    inode_num = find_file_in_dir(base_name, dir_inode_num);
+    if (!inode_num) { fs_lock_leave(); return 0; }
+    if (!read_inode(inode_num, &inode)) { fs_lock_leave(); return 0; }
+    if ((inode.i_mode & 0xF000) == 0x4000) { fs_lock_leave(); return -1; }
+
+    for (i = 0; i < 12; i++) {
+        if (inode.i_block[i] != 0) {
+            free_block(inode.i_block[i]);
+            inode.i_block[i] = 0;
+        }
+    }
+    if (inode.i_block[12] != 0) {
+        unsigned int* indirect = (unsigned int*)malloc(1024);
+        if (indirect) {
+            read_block(inode.i_block[12], indirect);
+            for (i = 0; i < 256; i++) {
+                if (indirect[i] != 0) free_block(indirect[i]);
+            }
+            free(indirect);
+        }
+        free_block(inode.i_block[12]);
+    }
+
+    memset(&inode, 0, sizeof(inode));
+    inode.i_dtime = 1;
+    write_inode(inode_num, &inode);
+    free_inode(inode_num);
+    remove_dir_entry(dir_inode_num, base_name);
+
+    fs_lock_leave();
+    return 1;
+}
+
+int fs_mkdir(const char* path) {
+    char dir_name[FS_FILENAME_LEN];
+    char base_name[FS_FILENAME_LEN];
+    unsigned int dir_inode_num;
+    unsigned int new_inode_num;
+    unsigned int new_block_num;
+    Ext2Inode new_inode;
+    unsigned char* block_buf;
+
+    fs_lock_enter();
+    if (!fs_ready || !path) { fs_lock_leave(); return 0; }
+    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
+        fs_lock_leave(); return 0;
+    }
+    dir_inode_num = EXT2_ROOT_INODE;
+    if (dir_name[0]) {
+        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
+        if (!dir_inode_num) { fs_lock_leave(); return 0; }
+    }
+    if (find_file_in_dir(base_name, dir_inode_num)) { fs_lock_leave(); return -1; }
+
+    new_inode_num = alloc_inode();
+    if (!new_inode_num) { fs_lock_leave(); return 0; }
+    new_block_num = alloc_block();
+    if (!new_block_num) {
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+
+    memset(&new_inode, 0, sizeof(new_inode));
+    new_inode.i_mode = 0x41ED;
+    new_inode.i_size = 1024;
+    new_inode.i_links_count = 2;
+    new_inode.i_blocks = 2;
+    new_inode.i_block[0] = new_block_num;
+    if (!write_inode(new_inode_num, &new_inode)) {
+        free_block(new_block_num);
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+
+    block_buf = (unsigned char*)malloc(1024);
+    if (!block_buf) {
+        free_block(new_block_num);
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+    memset(block_buf, 0, 1024);
+    {
+        Ext2DirEntry* dot = (Ext2DirEntry*)block_buf;
+        dot->inode = new_inode_num;
+        dot->rec_len = 12;
+        dot->name_len = 1;
+        dot->file_type = EXT2_FT_DIR;
+        dot->name[0] = '.';
+
+        Ext2DirEntry* dotdot = (Ext2DirEntry*)(block_buf + 12);
+        dotdot->inode = dir_inode_num;
+        dotdot->rec_len = 1024 - 12;
+        dotdot->name_len = 2;
+        dotdot->file_type = EXT2_FT_DIR;
+        dotdot->name[0] = '.';
+        dotdot->name[1] = '.';
+    }
+    write_block(new_block_num, block_buf);
+    free(block_buf);
+
+    if (!add_dir_entry(dir_inode_num, new_inode_num, base_name, EXT2_FT_DIR)) {
+        free_block(new_block_num);
+        free_inode(new_inode_num);
+        fs_lock_leave();
+        return 0;
+    }
+    {
+        Ext2Inode parent_inode;
+        if (read_inode(dir_inode_num, &parent_inode)) {
+            parent_inode.i_links_count++;
+            write_inode(dir_inode_num, &parent_inode);
+        }
+    }
+    ext2_gd.bg_used_dirs_count++;
+    write_group_desc();
+
+    fs_lock_leave();
+    return 1;
+}
+
+
 // 修复后的 fs_list_files
 void fs_list_files() {
-    if (!fs_ready) return;
     Ext2Inode root_inode;
-    read_inode(EXT2_ROOT_INODE, &root_inode);
+    char* block_buf;
+    unsigned int pos = 0;
 
-    // 必须从堆分配，防止栈溢出
-    char* block_buf = (char*)malloc(1024);
+    if (!fs_ready || !read_inode(EXT2_ROOT_INODE, &root_inode)) return;
+    if (root_inode.i_block[0] == 0) return;
+
+    block_buf = (char*)malloc(1024);
     if (!block_buf) return;
-
-    // 【修正】使用 read_block 以包含 FS_BASE_SECTOR 偏移
     read_block(root_inode.i_block[0], block_buf);
 
-    unsigned int pos = 0;
     while (pos < 1024) {
-        Ext2DirEntry* entry = (Ext2DirEntry*)(block_buf + pos);
-        if (entry->rec_len == 0) break; // 防止死循环
-        
-        // 假设你有 kprintf
-        // kprintf("File: %s (inode %d)\n", name, entry->inode);
-        
-        pos += entry->rec_len;
+        unsigned int rec_len;
+        unsigned int name_len;
+        if (!dir_entry_bounds((const unsigned char*)block_buf, pos, &rec_len, &name_len)) break;
+        (void)name_len;
+        pos += rec_len;
     }
     free(block_buf);
 }
@@ -781,51 +1265,50 @@ void fs_list_files() {
 int fs_get_file_list(char* buffer, int max_len, const char* dir_path) {
     Ext2Inode dir_inode;
     unsigned int dir_inode_num;
+    char* block_buf;
+    unsigned int pos = 0;
+    int buf_idx = 0;
 
     if (!buffer || max_len <= 0) return 0;
     buffer[0] = '\0';
-    if (!fs_ready) {
-        return 0;
-    }
+    if (!fs_ready) return 0;
 
     dir_inode_num = resolve_dir_inode(dir_path);
-    if (!dir_inode_num) return 0;
-    if (!read_inode(dir_inode_num, &dir_inode)) return 0;
-    if ((dir_inode.i_mode & 0xF000) != 0x4000) return 0;
+    if (!dir_inode_num || !read_inode(dir_inode_num, &dir_inode)) return 0;
+    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) return 0;
 
-    // 从堆分配
-    char* block_buf = (char*)malloc(1024);
-    if (!block_buf) {
-        return 0;
-    }
+    block_buf = (char*)malloc(1024);
+    if (!block_buf) return 0;
     read_block(dir_inode.i_block[0], block_buf);
-    
-    unsigned int pos = 0;
-    int buf_idx = 0;
-    buffer[0] = '\0';
 
     while (pos < 1024) {
-        Ext2DirEntry* entry = (Ext2DirEntry*)(block_buf + pos);
-        if (entry->rec_len == 0) break;
-        
+        Ext2DirEntry* entry;
+        unsigned int rec_len;
+        unsigned int name_len;
         char name[256];
-        int l = entry->name_len;
-        for(int i=0; i<l; i++) name[i] = entry->name[i];
+        int l;
+
+        if (!dir_entry_bounds((const unsigned char*)block_buf, pos, &rec_len, &name_len)) {
+            free(block_buf);
+            return 0;
+        }
+        entry = (Ext2DirEntry*)(block_buf + pos);
+        l = (int)name_len;
+        for (int i = 0; i < l; i++) name[i] = entry->name[i];
         name[l] = '\0';
-        
-        // 跳过 . 和 ..
-        if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
-            int needed = l + 1; // name + \n
+
+        if (entry->inode != 0 && strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+            int needed = l + 1;
             if (buf_idx + needed < max_len) {
-                for(int i=0; i<l; i++) buffer[buf_idx++] = name[i];
+                for (int i = 0; i < l; i++) buffer[buf_idx++] = name[i];
                 buffer[buf_idx++] = '\n';
             }
         }
-        
-        pos += entry->rec_len;
+        pos += rec_len;
     }
+
     if (buf_idx >= max_len) buf_idx = max_len - 1;
     buffer[buf_idx] = '\0';
-    free(block_buf); // 释放
+    free(block_buf);
     return 1;
 }

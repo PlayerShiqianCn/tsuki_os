@@ -14,6 +14,7 @@ __asm__(".code32");
 #include "klog.h"
 #include "net.h"
 #include "console.h"
+#include "paging.h"
 
 // 声明外部函数
 extern void init_timer(int freq);
@@ -45,14 +46,15 @@ void main() {
     memset(&__bss_start, 0, (int)(&__bss_end - &__bss_start));
     klog_init();
 
-    video_init();
-    klog_write("video init");
-
     // 1. 初始化核心系统
     heap_init();
     klog_write("heap init");
     init_idt();
     klog_write("idt init");
+    paging_init();
+    klog_write("paging init");
+    video_init();
+    klog_write("video init");
 
     // 2. 初始化进程系统 (将自己标记为 PID 0)
     process_init();
@@ -65,9 +67,6 @@ void main() {
     klog_write("ps2 init");
     ps2_mouse_init();
     klog_write("mouse init");
-    video_init();
-    klog_write("video reset");
-
     // 4. 初始化文件系统
     fs_init();
     if (!fs_is_ready()) {
@@ -107,6 +106,8 @@ void main() {
 
         // 循环读取缓冲区直到清空
         while (ps2_get_mouse_event(&evt)) {
+            int old_mouse_x = mouse_x;
+            int old_mouse_y = mouse_y;
             mouse_x += evt.dx;
             mouse_y += evt.dy;
             
@@ -129,22 +130,31 @@ void main() {
             }
 
             mouse_left_prev = left_curr;
-            video_request_redraw();
+            video_invalidate_rect(old_mouse_x, old_mouse_y, 8, 8);
+            video_invalidate_rect(mouse_x, mouse_y, 8, 8);
         }
 
         // 键盘不再由内核消费，全部交给 tsk 进程通过 SYS_GET_KEY 获取
 
-        // 2. 渲染 (Rendering)
-        if (video_consume_redraw()) {
-            desktop_draw_background();
-            win_draw_all();
-
-            desktop_draw_taskbar();
-            draw_mouse();
-            video_swap_buffer();
+        // 2. 仅重建并提交受损区域。
+        {
+            DamageRect damage[DAMAGE_MAX_RECTS];
+            int damage_count = video_consume_damage(damage, DAMAGE_MAX_RECTS);
+            if (damage_count > 0) {
+                for (int i = 0; i < damage_count; i++) {
+                    video_set_clip(damage[i].x, damage[i].y, damage[i].w, damage[i].h);
+                    desktop_draw_background();
+                    win_draw_all();
+                    desktop_draw_taskbar();
+                    draw_mouse();
+                }
+                video_reset_clip();
+                video_swap_buffer_damage(damage, damage_count);
+            }
         }
 
-        // 不使用 hlt，或者小心使用，确保中断能唤醒
-        // __asm__ volatile("hlt");
+        // Timer/PS2 IRQ 唤醒；静止桌面不再忙轮询。
+        video_note_idle_halt();
+        __asm__ volatile("sti; hlt");
     }
 }

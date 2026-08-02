@@ -17,6 +17,11 @@ typedef struct Window {
     unsigned char bg_color;
     int buffer_slot;
     unsigned int* buffer;
+    int buffer_page_first;
+    int buffer_page_count;
+    unsigned int generation;
+    int ref_count;
+    int closing;
     void (*extra_draw)(struct Window* win); 
 } Window;
 
@@ -32,6 +37,8 @@ int win_set_title(Window* w, const char* title);
 int win_get_count();
 Window* win_get_at_layer(int index);
 Window* win_get_focused();
+int win_snapshot_layers(Window** out, int max_count);
+void win_release_snapshot(Window** snapshot, int count);
 
 // 更新窗口缓冲区的像素
 void win_put_pixel(Window* w, int x, int y, unsigned int color);

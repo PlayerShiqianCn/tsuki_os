@@ -63,6 +63,7 @@ void main() {
 
     // 4. 事件循环
     while(1) {
+        sleep(1);
         int mx, my;
         if (get_mouse_click(&mx, &my)) {
             // 点击了按钮

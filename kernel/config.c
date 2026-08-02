@@ -75,7 +75,7 @@ void kernel_reload_system_config(void) {
     if (!sys_file_open("system/config.rtsk", &file)) return;
     if (file.size == 0 || file.size >= sizeof(buf)) return;
 
-    n = fs_read_file("system/config.rtsk", buf);
+    n = fs_read_file("system/config.rtsk", buf, sizeof(buf) - 1);
     if (n <= 0) return;
     if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
     buf[n] = '\0';

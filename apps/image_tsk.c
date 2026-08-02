@@ -170,13 +170,18 @@ static void load_selected_image(void) {
 
     s_copy(path, "image/", sizeof(path));
     s_append(path, image_files[selected_index], sizeof(path));
-    jpg_size = read_file(path, image_file_buf);
+    jpg_size = read_file(path, image_file_buf, sizeof(image_file_buf));
     if (jpg_size <= 0) {
         set_status("JPG read failed.");
         return;
     }
     if (!jpeg_probe(image_file_buf, jpg_size, &info)) {
         set_status("Bad JPG header.");
+        return;
+    }
+    if (info.width <= 0 || info.height <= 0 ||
+        info.width > MAX_JPEG_W || info.height > MAX_JPEG_H) {
+        set_status("JPEG is too large.");
         return;
     }
 
@@ -206,7 +211,7 @@ static void load_selected_image(void) {
     }
 
     build_jr32_path(image_files[selected_index], path, sizeof(path));
-    read = read_file(path, image_file_buf);
+    read = read_file(path, image_file_buf, sizeof(image_file_buf));
     if (read <= 0 || read > JR32_MAX_FILE) {
         set_status("Read failed.");
         return;
@@ -273,30 +278,28 @@ static void draw_preview(void) {
     }
 
     {
-        int scale_x = (PREVIEW_W - 8) / image_w;
-        int scale_y = (PREVIEW_H - 8) / image_h;
-        int scale = scale_x < scale_y ? scale_x : scale_y;
-        int draw_w;
-        int draw_h;
-        int start_x;
-        int start_y;
-        int src = 0;
+        int available_w = PREVIEW_W - 8;
+        int available_h = PREVIEW_H - 8;
+        int draw_w = available_w;
+        int draw_h = (image_h * draw_w) / image_w;
+        RgbBlitArgs args;
 
-        if (scale < 1) scale = 1;
-        draw_w = image_w * scale;
-        draw_h = image_h * scale;
-        start_x = PREVIEW_X + (PREVIEW_W - draw_w) / 2;
-        start_y = PREVIEW_Y + (PREVIEW_H - draw_h) / 2;
-
-        for (int y = 0; y < image_h; y++) {
-            for (int x = 0; x < image_w; x++) {
-                unsigned int rgb = ((unsigned int)image_pixels[src] << 16) |
-                                   ((unsigned int)image_pixels[src + 1] << 8) |
-                                   (unsigned int)image_pixels[src + 2];
-                draw_rect_rgb(start_x + x * scale, start_y + y * scale, scale, scale, rgb);
-                src += image_pixel_stride;
-            }
+        if (draw_h > available_h) {
+            draw_h = available_h;
+            draw_w = (image_w * draw_h) / image_h;
         }
+        if (draw_w < 1) draw_w = 1;
+        if (draw_h < 1) draw_h = 1;
+        args.pixels = image_pixels;
+        args.src_width = image_w;
+        args.src_height = image_h;
+        args.src_row_stride = image_w * image_pixel_stride;
+        args.src_pixel_stride = image_pixel_stride;
+        args.dst_x = PREVIEW_X + (PREVIEW_W - draw_w) / 2;
+        args.dst_y = PREVIEW_Y + (PREVIEW_H - draw_h) / 2;
+        args.dst_width = draw_w;
+        args.dst_height = draw_h;
+        draw_rgb(&args);
     }
 }
 
@@ -347,6 +350,7 @@ void main() {
     render();
 
     while (1) {
+        sleep(1);
         int mx;
         int my;
         int ev;

@@ -47,8 +47,8 @@ unsigned int get_ticks(void) {
     return (unsigned int)_syscall3(SYS_GET_TICKS, 0, 0, 0);
 }
 
-int read_file(const char* filename, void* buffer) {
-    return _syscall3(SYS_READ_FILE, (int)filename, (int)buffer, 0);
+int read_file(const char* filename, void* buffer, unsigned int capacity) {
+    return _syscall3(SYS_READ_FILE, (int)filename, (int)buffer, (int)capacity);
 }
 
 int write_file(const char* filename, const void* buffer, int size) {
@@ -61,6 +61,10 @@ void draw_rect(int x, int y, int w, int h, int color) {
 
 void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
     _syscall5(SYS_DRAW_RECT_RGB, x, y, w, h, (int)rgb);
+}
+
+int draw_rgb(const RgbBlitArgs* args) {
+    return _syscall3(SYS_BLIT_RGB, (int)args, 0, 0);
 }
 
 void draw_text(int x, int y, const char* str, int color) {
@@ -101,6 +105,14 @@ int list_files_at(char* buffer, int max_len, const char* dir) {
 
 int launch_tsk(const char* filename) {
     return _syscall3(SYS_LAUNCH_TSK, (int)filename, 0, 0);
+}
+
+int launch_tsk_ex(const char* filename, int flags) {
+    return _syscall3(SYS_LAUNCH_TSK_EX, (int)filename, flags, 0);
+}
+
+int get_video_stats(UserVideoStats* out) {
+    return _syscall3(SYS_GET_VIDEO_STATS, (int)out, 0, 0);
 }
 
 int get_mouse_click(int* x, int* y) {
@@ -164,6 +176,36 @@ int set_wallpaper_style(int style) {
 
 int set_start_page_enabled(int enabled) {
     return _syscall3(SYS_SET_START_PAGE_ENABLED, enabled, 0, 0);
+}
+
+// Process management
+int get_process_list(ProcessInfo* buffer, int max_count) {
+    return _syscall3(SYS_PS, (int)buffer, max_count, 0);
+}
+
+int set_process_priority(int pid, int priority) {
+    return _syscall3(SYS_SET_PRIORITY, pid, priority, 0);
+}
+
+int get_process_priority(int pid) {
+    return _syscall3(SYS_GET_PRIORITY, pid, 0, 0);
+}
+
+// File management
+int create_file(const char* path) {
+    return _syscall3(SYS_CREATE_FILE, (int)path, 0, 0);
+}
+
+int delete_file(const char* path) {
+    return _syscall3(SYS_DELETE_FILE, (int)path, 0, 0);
+}
+
+int make_dir(const char* path) {
+    return _syscall3(SYS_MKDIR, (int)path, 0, 0);
+}
+
+int get_version(char* buffer, int max_len) {
+    return _syscall3(SYS_GET_VERSION, (int)buffer, max_len, 0);
 }
 
 static inline int _tlx_call(int op, int arg1, int arg2, int arg3, int arg4) {
@@ -232,4 +274,11 @@ int tlx_spawn(const char* path) {
 
 int tlx_identity(TlxIdentity* identity) {
     return _tlx_call(TLX_OP_IDENTITY, (int)identity, 0, 0, 0);
+}
+int tlx_unlink(const char* path) {
+    return _tlx_call(TLX_OP_UNLINK, (int)path, 0, 0, 0);
+}
+
+int tlx_mkdir(const char* path) {
+    return _tlx_call(TLX_OP_MKDIR, (int)path, 0, 0, 0);
 }

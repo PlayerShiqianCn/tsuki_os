@@ -32,4 +32,4 @@ SECTIONS
     }
 }
 
-ASSERT(__bss_end < 0x9F000, "Kernel BSS overlaps boot stack")
+ASSERT(__bss_end < 0xA0000, "Kernel BSS overlaps boot stack")

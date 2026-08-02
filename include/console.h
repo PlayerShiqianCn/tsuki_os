@@ -5,5 +5,6 @@
 
 // 启动 tsk 应用（进程管理功能，被 syscall.c 依赖）
 int console_launch_tsk(const char* filename);
+int console_launch_tsk_ex(const char* filename, int flags);
 
 #endif

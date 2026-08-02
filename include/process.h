@@ -22,7 +22,12 @@ typedef struct Process {
     unsigned int code_limit;// 任务镜像结束地址（开区间）
     unsigned int wake_tick; // 阻塞唤醒 tick（0 表示未定时阻塞）
     unsigned int time_slice_remaining; // 剩余时间片
+    int priority;                  // 调度优先级 (负=高, 0=普通, 正=低)
     unsigned int total_ticks; // 累计运行 tick
+    unsigned int page_directory;
+    int app_physical_slot;
+    unsigned int image_inode;
+    unsigned int instance_id;
     ProcessState state;
     int sandbox_level;
     int focus_state_cache;
@@ -39,13 +44,33 @@ extern Process* current_process;
 
 void process_init();
 int process_create(void (*entry_point)(), const char* name, Window* win,
-                   unsigned int code_base, unsigned int code_limit);
+                   unsigned int code_base, unsigned int code_limit,
+                   unsigned int page_directory, int app_physical_slot,
+                   unsigned int image_inode, unsigned int instance_id);
 void process_exit();
 void process_sleep(unsigned int ticks);
 void process_on_timer_tick(void);
 Process* process_find_by_window(Window* win);
 Process* process_find_by_name(const char* name);
+Process* process_find_by_image_inode(unsigned int inode_num);
 int process_has_live_user_process(void);
+
+
+// 进程信息（用于 ps 系统调用）
+typedef struct {
+    int pid;
+    int parent_pid;
+    char name[32];
+    int state;
+    int priority;
+    unsigned int total_ticks;
+    unsigned int instance_id;
+    int window_id;
+} ProcessInfo;
+
+int process_set_priority(int pid, int priority);
+int process_get_priority(int pid);
+int process_get_info_list(ProcessInfo* buffer, int max_count);
 
 // 调度函数：返回下一个进程的栈指针
 // 如果不需要切换，返回当前的 esp

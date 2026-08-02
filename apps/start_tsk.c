@@ -32,7 +32,7 @@ __attribute__((naked)) void _start() {
 static void launch_and_close(void) {
     if (total_tiles == 0) return;
     const char* name = all_tiles[selected].file;
-    launch_tsk(name);
+    launch_tsk_ex(name, TSK_LAUNCH_NEW_INSTANCE);
     exit();
 }
 
@@ -90,6 +90,7 @@ void main() {
 
     while (1) {
         int mx, my;
+        sleep(1);
         if (get_mouse_click(&mx, &my)) {
             for (int i = 0; i < total_tiles; i++) {
                 if (mx >= all_tiles[i].x && mx < all_tiles[i].x + TILE_W &&
