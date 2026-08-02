@@ -6,6 +6,7 @@
 #include "process.h"
 #include "window.h"
 #include "klog.h"
+#include "mp.h"
 
 static int app_launch_serial = 0;
 #define HIDDEN_SUFFIX "._hid_"
@@ -45,22 +46,29 @@ static const char* normalize_tsk_name(const char* filename) {
 }
 
 // 应用程序窗口的回调函数
-// 职责：将窗口内部的 Back Buffer 复制到屏幕显存
+// 职责：将窗口内部的 Back Buffer 复制到屏幕后缓冲
 void app_window_render(Window* w) {
-    // 1. 计算客户区在屏幕上的起始坐标
+    unsigned int* buf = (unsigned int*)MP_VIDEO_BACK_BUFFER_BASE;
     int start_x = w->x + BORDER_WIDTH;
     int start_y = w->y + TITLE_BAR_HEIGHT;
-    
-    // 2. 客户区大小
     int client_w = w->w - BORDER_WIDTH * 2;
     int client_h = w->h - TITLE_BAR_HEIGHT - BORDER_WIDTH;
 
-    // 3. 遍历客户区，将 Window 缓冲区的数据画到屏幕上
-    for (int y = 0; y < client_h; y++) {
-        for (int x = 0; x < client_w; x++) {
-            unsigned int color = win_get_pixel(w, x + BORDER_WIDTH, y + TITLE_BAR_HEIGHT);
-            put_pixel_rgb(start_x + x, start_y + y, color);
-        }
+    if (client_w <= 0 || client_h <= 0 || !w->buffer) return;
+
+    /* Clip to screen */
+    int x0 = (start_x < 0) ? 0 : start_x;
+    int y0 = (start_y < 0) ? 0 : start_y;
+    int x1 = (start_x + client_w > SCREEN_WIDTH) ? SCREEN_WIDTH : (start_x + client_w);
+    int y1 = (start_y + client_h > SCREEN_HEIGHT) ? SCREEN_HEIGHT : (start_y + client_h);
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int y = y0; y < y1; y++) {
+        int src_row = y - start_y;
+        unsigned int* src = w->buffer + (src_row + TITLE_BAR_HEIGHT) * w->w + BORDER_WIDTH + (x0 - start_x);
+        unsigned int* dst = buf + y * SCREEN_WIDTH + x0;
+        int cols = x1 - x0;
+        while (cols--) *dst++ = *src++ & 0x00FFFFFFu;
     }
 }
 

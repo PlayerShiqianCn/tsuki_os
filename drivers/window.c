@@ -225,11 +225,21 @@ void win_draw_all() {
         }
 
         if (w->buffer) {
-            for (int row = 0; row < w->h; row++) {
-                for (int col = 0; col < w->w; col++) {
-                    unsigned int color = w->buffer[row * w->w + col];
-                    put_pixel_rgb(w->x + col, w->y + row, color);
-                }
+            unsigned int* buf = (unsigned int*)MP_VIDEO_BACK_BUFFER_BASE;
+            int wx = w->x, wy = w->y, ww = w->w, wh = w->h;
+            int row;
+            /* Clip rows */
+            int row_start = (wy < 0) ? -wy : 0;
+            int row_end = (wy + wh > SCREEN_HEIGHT) ? (SCREEN_HEIGHT - wy) : wh;
+            /* Clip cols */
+            int col_start = (wx < 0) ? -wx : 0;
+            int col_end = (wx + ww > SCREEN_WIDTH) ? (SCREEN_WIDTH - wx) : ww;
+
+            for (row = row_start; row < row_end; row++) {
+                unsigned int* src = w->buffer + row * ww + col_start;
+                unsigned int* dst = buf + (wy + row) * SCREEN_WIDTH + (wx + col_start);
+                int cols = col_end - col_start;
+                while (cols--) *dst++ = *src++ & 0x00FFFFFFu;
             }
         } else {
             draw_rect(w->x, w->y, w->w, w->h, w->bg_color);

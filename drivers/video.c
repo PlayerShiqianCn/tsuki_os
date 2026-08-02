@@ -2,6 +2,7 @@
 #include "mp.h"
 #include "utils.h"
 #include "disk.h"
+#include "heap.h"
 #include "font8x8_basic.h"
 
 #define VBE_DISPI_IOPORT_INDEX  0x01CE
@@ -34,6 +35,30 @@ static int video_last_content_x = -1;
 static int video_last_content_y = -1;
 static int video_last_content_w = -1;
 static int video_last_content_h = -1;
+
+/* Precomputed scaling lookup tables for video_swap_buffer */
+/* Use heap to avoid growing .bss past boot stack limit */
+static int* scale_x_lut = 0;
+static int* scale_y_lut = 0;
+static int scale_lut_capacity = 0;
+static int scale_lut_valid = 0;
+
+static void rebuild_scale_lut(int content_w, int content_h) {
+    int i;
+    int needed = content_w > content_h ? content_w : content_h;
+    if (needed > scale_lut_capacity || !scale_x_lut) {
+        if (scale_x_lut) { free(scale_x_lut); free(scale_y_lut); }
+        scale_x_lut = (int*)malloc(needed * sizeof(int));
+        scale_y_lut = (int*)malloc(needed * sizeof(int));
+        scale_lut_capacity = needed;
+    }
+    if (!scale_x_lut || !scale_y_lut) return;
+    for (i = 0; i < content_w; i++)
+        scale_x_lut[i] = (i * SCREEN_WIDTH) / content_w;
+    for (i = 0; i < content_h; i++)
+        scale_y_lut[i] = (i * SCREEN_HEIGHT) / content_h;
+    scale_lut_valid = 1;
+}
 
 static unsigned int* video_back_buffer(void) {
     return (unsigned int*)MP_VIDEO_BACK_BUFFER_BASE;
@@ -175,6 +200,7 @@ static int video_resolution_supported(int w, int h) {
 }
 
 static void video_invalidate_layout(void) {
+    scale_lut_valid = 0;
     video_last_content_x = -1;
     video_last_content_y = -1;
     video_last_content_w = -1;
@@ -278,11 +304,26 @@ void put_pixel(int x, int y, unsigned char color) {
 }
 
 void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
+    unsigned int* buf;
+    int x0, y0, x1, y1, row;
+
     if (w <= 0 || h <= 0) return;
-    for (int i = 0; i < h; i++) {
-        for (int j = 0; j < w; j++) {
-            put_pixel_rgb(x + j, y + i, rgb);
-        }
+    rgb &= 0x00FFFFFFu;
+
+    /* Clip to screen bounds once */
+    x0 = x < 0 ? 0 : x;
+    y0 = y < 0 ? 0 : y;
+    x1 = x + w;
+    if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
+    y1 = y + h;
+    if (y1 > SCREEN_HEIGHT) y1 = SCREEN_HEIGHT;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    buf = video_back_buffer();
+    for (row = y0; row < y1; row++) {
+        unsigned int* dst = buf + row * SCREEN_WIDTH + x0;
+        int cols = x1 - x0;
+        while (cols--) *dst++ = rgb;
     }
 }
 
@@ -329,13 +370,24 @@ static int get_font_index(char c) {
 }
 
 void draw_char(int x, int y, char c, unsigned char color) {
-    unsigned int rgb = video_color_to_rgb(color);
+    unsigned int rgb = video_color_to_rgb(color) & 0x00FFFFFFu;
+    unsigned int* buf = video_back_buffer();
     int font_idx = get_font_index(c);
-    for (int i = 0; i < 8; i++) {
-        unsigned char row = (unsigned char)font8x8_basic[font_idx][i];
-        for (int j = 0; j < 8; j++) {
-            if (((row >> j) & 1) != 0) {
-                put_pixel_rgb(x + j, y + i, rgb);
+    int i, j;
+
+    /* Quick reject if entirely off-screen */
+    if (x + 8 <= 0 || x >= SCREEN_WIDTH || y + 8 <= 0 || y >= SCREEN_HEIGHT)
+        return;
+
+    for (i = 0; i < 8; i++) {
+        unsigned char row_bits = (unsigned char)font8x8_basic[font_idx][i];
+        int py = y + i;
+        if (py < 0 || py >= SCREEN_HEIGHT) continue;
+        for (j = 0; j < 8; j++) {
+            if (((row_bits >> j) & 1) != 0) {
+                int px = x + j;
+                if (px >= 0 && px < SCREEN_WIDTH)
+                    buf[py * SCREEN_WIDTH + px] = rgb;
             }
         }
     }
@@ -354,7 +406,9 @@ void video_swap_buffer() {
 
     if (!video_vbe_ready) {
         unsigned char* vga = (unsigned char*)VGA_ADDRESS;
-        for (int i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
+        int total = SCREEN_WIDTH * SCREEN_HEIGHT;
+        int i;
+        for (i = 0; i < total; i++) {
             vga[i] = video_rgb_to_index(back[i]);
         }
         return;
@@ -364,9 +418,9 @@ void video_swap_buffer() {
         volatile unsigned int* fb = video_framebuffer();
         int content_w = video_fb_width;
         int content_h = (video_fb_width * SCREEN_HEIGHT) / SCREEN_WIDTH;
-        int offset_x;
-        int offset_y;
+        int offset_x, offset_y;
         int layout_changed;
+        int y;
 
         if (content_h > video_fb_height) {
             content_h = video_fb_height;
@@ -384,7 +438,8 @@ void video_swap_buffer() {
                           content_h != video_last_content_h);
 
         if (layout_changed) {
-            for (int i = 0; i < video_fb_width * video_fb_height; i++) {
+            int i; int total = video_fb_width * video_fb_height;
+            for (i = 0; i < total; i++) {
                 fb[i] = 0x00000000u;
             }
             video_last_content_x = offset_x;
@@ -393,13 +448,22 @@ void video_swap_buffer() {
             video_last_content_h = content_h;
         }
 
-        for (int y = 0; y < content_h; y++) {
-            int src_y = (y * SCREEN_HEIGHT) / content_h;
-            volatile unsigned int* dst = fb + (offset_y + y) * video_fb_width + offset_x;
+        /* Rebuild lookup tables when dimensions change */
+        if (!scale_lut_valid || content_w != video_last_content_w || content_h != video_last_content_h) {
+            rebuild_scale_lut(content_w, content_h);
+        }
 
-            for (int x = 0; x < content_w; x++) {
-                int src_x = (x * SCREEN_WIDTH) / content_w;
-                dst[x] = back[src_y * SCREEN_WIDTH + src_x];
+        /* Scaled blit using precomputed LUT - no per-pixel division */
+        {
+            int fb_pitch = video_fb_width;
+            for (y = 0; y < content_h; y++) {
+                int src_y = scale_y_lut[y];
+                unsigned int* src_row = back + src_y * SCREEN_WIDTH;
+                volatile unsigned int* dst = fb + (offset_y + y) * fb_pitch + offset_x;
+                int x;
+                for (x = 0; x < content_w; x++) {
+                    dst[x] = src_row[scale_x_lut[x]];
+                }
             }
         }
     }
