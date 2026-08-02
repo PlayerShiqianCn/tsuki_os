@@ -483,6 +483,7 @@ void main() {
     render();
 
     while (1) {
+        sleep(1);
         int mx;
         int my;
         int ev;

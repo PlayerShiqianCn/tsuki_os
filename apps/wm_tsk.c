@@ -112,6 +112,7 @@ void main() {
     render();
 
     while (1) {
+        sleep(1);
         int ev = win_get_event();
         if (ev & WIN_EVENT_FOCUS_CHANGED) {
             is_focused = win_is_focused();

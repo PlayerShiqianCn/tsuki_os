@@ -90,6 +90,7 @@ void main() {
 
     while (1) {
         int mx, my;
+        sleep(1);
         if (get_mouse_click(&mx, &my)) {
             for (int i = 0; i < total_tiles; i++) {
                 if (mx >= all_tiles[i].x && mx < all_tiles[i].x + TILE_W &&

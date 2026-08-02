@@ -1212,6 +1212,7 @@ void main() {
     render();
 
     while (1) {
+        sleep(1);
         int mx, my;
         if (get_mouse_click(&mx, &my)) {
             // 检查是不是点击了滑块区域
