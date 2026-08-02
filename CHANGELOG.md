@@ -1,5 +1,56 @@
 # 更新记录
 
+## 2026-08-02 — v0.4.0 "Foundation"
+
+### 文件系统：文件创建与删除
+
+- **新建文件**：`fs_create_file()` 分配空闲 inode、初始化元数据、在父目录中插入目录项，用户可通过 `touch` 命令或 `TLX_OPEN_CREATE` 标志创建新文件。
+- **删除文件**：`fs_delete_file()` 释放文件占用的所有数据块（含一级间接块）、回收 inode、移除目录项。
+- **创建目录**：`fs_mkdir()` 分配 inode 和数据块，初始化 `.` 与 `..` 条目，更新父目录链接计数。
+- **动态块分配**：`fs_write_file()` 重写为支持按需分配数据块的写入路径——新创建的文件不再需要 mkfs 预留块即可写入。
+- **底层原语**：新增 `alloc_inode` / `free_inode` / `alloc_block` / `free_block` / `add_dir_entry` / `remove_dir_entry` / `write_superblock` / `write_group_desc`，均操作 ext2 位图与组描述符。
+
+### 进程调度：优先级调度
+
+- **优先级字段**：PCB 新增 `priority`（−10 最高 → +10 最低，默认 0）。
+- **调度器升级**：从纯轮转（Round-Robin）升级为优先级 + 同级轮转混合调度（`process_pick_next`）。
+- **进程查询**：新增 `process_get_info_list()`，支持用户态获取进程列表（PID、父 PID、名称、状态、优先级、累计 tick）。
+- **优先级 API**：新增 `process_set_priority()` / `process_get_priority()`。
+
+### 系统调用扩展
+
+| 编号 | 名称 | 功能 |
+|------|------|------|
+| 31 | `SYS_PS` | 获取进程列表 |
+| 32 | `SYS_MKDIR` | 创建目录 |
+| 33 | `SYS_DELETE_FILE` | 删除文件 |
+| 34 | `SYS_GET_VERSION` | 获取内核版本字符串 |
+| 35 | `SYS_SET_PRIORITY` | 设置进程优先级 |
+| 36 | `SYS_GET_PRIORITY` | 查询进程优先级 |
+| 37 | `SYS_CREATE_FILE` | 创建空文件 |
+
+### TLX 兼容层增强
+
+- **`TLX_OPEN_CREATE`**：不再返回 `ENOSYS`，实际调用 `fs_create_file` 创建文件后打开。
+- **`tlx_unlink`**（`TLX_OP_UNLINK`）：删除文件，返回标准 TLX 错误码。
+- **`tlx_mkdir`**（`TLX_OP_MKDIR`）：创建目录。
+- **feature_bits**：更新为 `0x1FF`，标志文件创建/删除/目录支持。
+
+### 终端增强
+
+- **`ps` / `tasks`**：列出所有进程的 PID、优先级、状态、累计 tick 和名称。
+- **`sysinfo`**：显示系统版本、运行时间和进程列表的综合信息。
+- **`mkdir <dir>`**：创建目录。
+- **`touch <file>`**：创建空文件。
+- **`rm <file>`**：删除文件。
+- **`write_int`**：新增带符号整数输出函数，用于显示负优先级。
+
+### 构建与工程
+
+- **版本号**：升级至 `0.4.0-foundation`。
+- **编译宏**：Makefile 新增 `-DTSUKI_OS_VERSION`，内核可通过 `SYS_GET_VERSION` 返回编译时版本。
+- **代码清理**：移除不再使用的 `next_runnable_from` 和 `inode_data_capacity`。
+
 ## 2026-08-01
 
 - **构建体验**：支持自动探测 `i686-linux-gnu-` 交叉工具链；新增 `make debug` 串口调试目标。

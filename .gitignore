@@ -9,3 +9,4 @@ qemu_vbe_test.log
 /*.ppm
 /boot_check*.py
 /img_open*.py
+.openclaw/

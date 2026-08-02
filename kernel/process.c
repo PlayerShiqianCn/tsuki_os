@@ -141,26 +141,6 @@ static void wake_blocked_processes(void) {
     }
 }
 
-static Process* next_runnable_from(Process* start) {
-    Process* p;
-
-    if (!process_list) return 0;
-
-    p = start ? start : process_list;
-    while (p) {
-        if (is_runnable(p)) return p;
-        p = p->next;
-    }
-
-    p = process_list;
-    while (p && p != start) {
-        if (is_runnable(p)) return p;
-        p = p->next;
-    }
-
-    return 0;
-}
-
 void process_init() {
     // 创建内核闲置进程 (PID 0)
     // 它代表了 kernel.c 中的 main 循环
@@ -356,7 +336,83 @@ int process_has_live_user_process(void) {
     return 0;
 }
 
-// 调度器：Round Robin
+
+
+// Priority-aware next process selection.
+// Picks the runnable process with the lowest priority value (highest priority).
+// Falls back to round-robin among equal-priority processes.
+static Process* process_pick_next(Process* after) {
+    Process* p;
+    Process* best = 0;
+    int best_prio = 0x7FFFFFFF;
+
+    if (!after) return 0;
+
+    // Scan the entire process list for the best candidate
+    p = process_list;
+    while (p) {
+        if (p != after && is_runnable(p)) {
+            if (p->priority < best_prio) {
+                best_prio = p->priority;
+                best = p;
+            }
+        }
+        p = p->next;
+    }
+
+    // If nothing found after 'after', consider 'after' itself (if runnable)
+    if (!best && is_runnable(after)) {
+        best = after;
+    }
+
+    return best;
+}
+
+int process_set_priority(int pid, int priority) {
+    Process* p = process_list;
+    while (p) {
+        if (p->pid == pid && p->state != PROCESS_DEAD) {
+            if (priority < -10) priority = -10;
+            if (priority > 10) priority = 10;
+            p->priority = priority;
+            return 1;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+int process_get_priority(int pid) {
+    Process* p = process_list;
+    while (p) {
+        if (p->pid == pid && p->state != PROCESS_DEAD) {
+            return p->priority;
+        }
+        p = p->next;
+    }
+    return 0;
+}
+
+int process_get_info_list(ProcessInfo* buffer, int max_count) {
+    Process* p;
+    int count = 0;
+
+    if (!buffer || max_count <= 0) return 0;
+    p = process_list;
+    while (p && count < max_count) {
+        buffer[count].pid = p->pid;
+        buffer[count].parent_pid = p->parent_pid;
+        memcpy(buffer[count].name, p->name, 32);
+        buffer[count].state = (int)p->state;
+        buffer[count].priority = p->priority;
+        buffer[count].total_ticks = p->total_ticks;
+        count++;
+        p = p->next;
+    }
+    return count;
+}
+
+// 调度器：Priority + Round-Robin
 unsigned int process_schedule(unsigned int current_esp) {
     Process* prev_process;
     Process* next;
@@ -369,7 +425,7 @@ unsigned int process_schedule(unsigned int current_esp) {
     current_process->esp = current_esp;
     reap_dead_processes();
 
-    next = next_runnable_from(prev_process->next);
+    next = process_pick_next(prev_process);
 
     keep_current = 0;
     if (prev_process->state == PROCESS_RUNNING &&
@@ -399,7 +455,7 @@ unsigned int process_schedule(unsigned int current_esp) {
             next = 0;
             break;
         }
-        next = next_runnable_from(next->next);
+        next = process_pick_next(next);
     }
     if (!next) {
         if (prev_process->state == PROCESS_DEAD) {

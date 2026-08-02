@@ -175,6 +175,9 @@ int fs_is_ready(void);
 void fs_list_files();
 int fs_get_file_list(char* buffer, int max_len, const char* dir_path);
 int fs_read_file(const char* filename, void* buffer);
+int fs_create_file(const char* path);
+int fs_delete_file(const char* path);
+int fs_mkdir(const char* path);
 int fs_write_file(const char* filename, const void* buffer, unsigned int size);
 
 // 封装接口

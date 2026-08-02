@@ -650,6 +650,50 @@ void syscall_handler(Registers* regs) {
             regs->eax = 1;
             break;
 
+        case SYS_PS:
+            if (regs->ebx && regs->ecx > 0) {
+                regs->eax = process_get_info_list((ProcessInfo*)regs->ebx, regs->ecx);
+            } else {
+                regs->eax = 0;
+            }
+            break;
+
+        case SYS_MKDIR:
+            regs->eax = fs_mkdir((const char*)regs->ebx);
+            break;
+
+        case SYS_CREATE_FILE:
+            regs->eax = fs_create_file((const char*)regs->ebx);
+            break;
+
+        case SYS_DELETE_FILE:
+            regs->eax = fs_delete_file((const char*)regs->ebx);
+            break;
+
+        case SYS_GET_VERSION: {
+            const char* ver = TSUKI_OS_VERSION;
+            if (regs->ebx && regs->ecx > 0) {
+                char* buf = (char*)regs->ebx;
+                int i;
+                for (i = 0; i < (int)regs->ecx - 1 && ver[i]; i++) {
+                    buf[i] = ver[i];
+                }
+                buf[i] = '\0';
+                regs->eax = i;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+        }
+
+        case SYS_SET_PRIORITY:
+            regs->eax = process_set_priority(regs->ebx, regs->ecx);
+            break;
+
+        case SYS_GET_PRIORITY:
+            regs->eax = process_get_priority(regs->ebx);
+            break;
+
         default:
             regs->eax = 0;
             break;

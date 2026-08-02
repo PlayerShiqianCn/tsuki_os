@@ -31,6 +31,7 @@ static char net_http_buf[NET_HTTP_BUF_SIZE];
 
 void main();
 static void push_char(char ch);
+static void write_int(int value);
 static void write_text(const char* s);
 static void write_line(const char* s);
 static void s_copy(char* dst, const char* src, int max);
@@ -100,6 +101,15 @@ static void write_uint(unsigned int value) {
 
     while (len > 0) {
         push_char(tmp[--len]);
+    }
+}
+
+static void write_int(int value) {
+    if (value < 0) {
+        push_char('-');
+        write_uint((unsigned int)(-value));
+    } else {
+        write_uint((unsigned int)value);
     }
 }
 
@@ -577,6 +587,62 @@ static void print_system_version(void) {
     if (file_buf[n - 1] != '\n') push_char('\n');
 }
 
+static void print_ps(void) {
+    ProcessInfo procs[16];
+    int count = get_process_list(procs, 16);
+    int i;
+
+    if (count <= 0) {
+        write_line("No processes.");
+        return;
+    }
+
+    write_text("PID  PPRI  STATE  TICKS  NAME");
+    push_char('\n');
+    for (i = 0; i < count; i++) {
+        write_uint(procs[i].pid);
+        push_char(' ');
+        if (procs[i].pid < 10) push_char(' ');
+
+        write_int(procs[i].priority);
+        push_char(' ');
+        if (procs[i].priority >= 0 && procs[i].priority < 10) push_char(' ');
+
+        switch (procs[i].state) {
+            case 0: write_text("READY   "); break;
+            case 1: write_text("RUNNING "); break;
+            case 2: write_text("BLOCKED "); break;
+            case 3: write_text("DEAD    "); break;
+            default: write_text("UNKNOWN "); break;
+        }
+
+        write_uint(procs[i].total_ticks);
+        push_char(' ');
+        write_line(procs[i].name);
+    }
+}
+
+static void print_sysinfo(void) {
+    char ver[64];
+    unsigned int ticks;
+
+    write_line("=== Tsuki OS System Info ===");
+
+    if (get_version(ver, sizeof(ver)) > 0) {
+        write_text("Version:  ");
+        write_line(ver);
+    }
+
+    ticks = get_ticks();
+    write_text("Uptime:   ");
+    write_uint(ticks / 100);
+    write_line(" s");
+
+    write_line("");
+    write_line("Processes:");
+    print_ps();
+}
+
 static void render(void) {
     int accent = is_focused ? 9 : 8;
 
@@ -698,7 +764,8 @@ static void run_command_core(char* c, int allow_hidden) {
         write_line("Commands:");
         write_line("help  version  pwd  cls/clear  ls");
         write_line("cd <dir>  cat <file>  run <name>");
-        write_line("echo <text>  uptime  net  ip  gw");
+        write_line("echo <text>  uptime  sysinfo  ps");
+        write_line("mkdir <dir>  touch <file>  rm <file>");
         write_line("net  ip <a.b.c.d>  gw <a.b.c.d>");
         write_line("dnsip <a.b.c.d>  ping <a.b.c.d>");
         write_line("dns <host>  http <host> [path]");
@@ -739,6 +806,97 @@ static void run_command_core(char* c, int allow_hidden) {
 
     if (s_cmp(c, "version") == 0) {
         print_system_version();
+        return;
+    }
+
+    if (s_cmp(c, "ps") == 0 || s_cmp(c, "tasks") == 0) {
+        print_ps();
+        return;
+    }
+
+    if (s_cmp(c, "sysinfo") == 0) {
+        print_sysinfo();
+        return;
+    }
+
+    if (s_ncmp(c, "mkdir ", 6) == 0) {
+        char* name = ltrim(c + 6);
+        char real_name[INPUT_MAX];
+        int result;
+
+        if (name[0] == '\0') {
+            write_line("Usage: mkdir <dirname>");
+            return;
+        }
+
+        if (!map_input_name_to_real(name, allow_hidden, real_name, sizeof(real_name))) {
+            write_line("Permission denied.");
+            return;
+        }
+
+        result = make_dir(real_name);
+        if (result > 0) {
+            write_text("Created directory: ");
+            write_line(real_name);
+        } else if (result < 0) {
+            write_line("Already exists.");
+        } else {
+            write_line("Failed to create directory.");
+        }
+        return;
+    }
+
+    if (s_ncmp(c, "touch ", 6) == 0) {
+        char* name = ltrim(c + 6);
+        char real_name[INPUT_MAX];
+        int result;
+
+        if (name[0] == '\0') {
+            write_line("Usage: touch <filename>");
+            return;
+        }
+
+        if (!map_input_name_to_real(name, allow_hidden, real_name, sizeof(real_name))) {
+            write_line("Permission denied.");
+            return;
+        }
+
+        result = create_file(real_name);
+        if (result > 0) {
+            write_text("Created file: ");
+            write_line(real_name);
+        } else if (result < 0) {
+            write_line("Already exists.");
+        } else {
+            write_line("Failed to create file.");
+        }
+        return;
+    }
+
+    if (s_ncmp(c, "rm ", 3) == 0) {
+        char* name = ltrim(c + 3);
+        char real_name[INPUT_MAX];
+        int result;
+
+        if (name[0] == '\0') {
+            write_line("Usage: rm <filename>");
+            return;
+        }
+
+        if (!map_input_name_to_real(name, allow_hidden, real_name, sizeof(real_name))) {
+            write_line("Permission denied.");
+            return;
+        }
+
+        result = delete_file(real_name);
+        if (result > 0) {
+            write_text("Deleted: ");
+            write_line(real_name);
+        } else if (result < 0) {
+            write_line("Is a directory.");
+        } else {
+            write_line("No such file.");
+        }
         return;
     }
 

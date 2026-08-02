@@ -58,6 +58,8 @@
 #define TLX_OP_CHDIR    14
 #define TLX_OP_SPAWN    15
 #define TLX_OP_IDENTITY 16
+#define TLX_OP_UNLINK   17
+#define TLX_OP_MKDIR    18
 
 #define TLX_HANDLE_KIND_INPUT  1
 #define TLX_HANDLE_KIND_OUTPUT 2
@@ -106,5 +108,7 @@ int tlx_getcwd(char* buffer, unsigned int capacity);
 int tlx_chdir(const char* path);
 int tlx_spawn(const char* path);
 int tlx_identity(TlxIdentity* identity);
+int tlx_unlink(const char* path);
+int tlx_mkdir(const char* path);
 
 #endif

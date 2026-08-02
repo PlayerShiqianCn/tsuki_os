@@ -175,8 +175,20 @@ static int tlx_open_handle(TlxContext* context, const char* input_path, unsigned
     if (flags & TLX_OPEN_APPEND) flags |= TLX_OPEN_WRITE;
     if (flags & TLX_OPEN_TRUNC) flags |= TLX_OPEN_WRITE;
     if (!(flags & (TLX_OPEN_READ | TLX_OPEN_WRITE))) flags |= TLX_OPEN_READ;
-    if (flags & TLX_OPEN_CREATE) return -TLX_ENOSYS;
-    if (!tlx_make_path(context, input_path, path)) return -TLX_EOVERFLOW;
+    if (flags & TLX_OPEN_CREATE) {
+        int create_result;
+        if (!tlx_make_path(context, input_path, path)) return -TLX_EOVERFLOW;
+        create_result = fs_create_file(path);
+        if (create_result == 0) return -TLX_ENOSPC;
+        if (create_result < 0) {
+            /* Already exists - that's OK if not EXCL */
+            if (flags & TLX_OPEN_TRUNC) {
+                /* Will be truncated below */
+            }
+        }
+    } else {
+        if (!tlx_make_path(context, input_path, path)) return -TLX_EOVERFLOW;
+    }
 
     handle = tlx_allocate_handle(context);
     if (handle < 0) return -TLX_EMFILE;
@@ -361,7 +373,8 @@ static int tlx_is_restricted(unsigned int op, unsigned int arg1) {
     }
     return !(op == TLX_OP_CLOSE || op == TLX_OP_READ || op == TLX_OP_FSTAT ||
              op == TLX_OP_GETPID || op == TLX_OP_GETPPID || op == TLX_OP_SLEEP ||
-             op == TLX_OP_YIELD || op == TLX_OP_CLOCK || op == TLX_OP_IDENTITY);
+             op == TLX_OP_YIELD || op == TLX_OP_CLOCK || op == TLX_OP_IDENTITY ||
+             op == TLX_OP_UNLINK || op == TLX_OP_MKDIR);
 }
 
 static int tlx_wait_for_wakeup(void) {
@@ -453,8 +466,22 @@ int tlx_dispatch(Registers* regs) {
             tlx_copy_string(identity.name, "Tsuki OS", sizeof(identity.name));
             tlx_copy_string(identity.release, "tlx-1", sizeof(identity.release));
             identity.abi_version = TLX_ABI_VERSION;
-            identity.feature_bits = 0x0000007Fu;
+            identity.feature_bits = 0x000001FFu;
             memcpy((void*)regs->ecx, &identity, sizeof(identity));
+            return 0;
+        case TLX_OP_UNLINK:
+            if (!regs->ecx) return -TLX_EINVAL;
+            if (!tlx_make_path(context, (const char*)regs->ecx, path)) return -TLX_EOVERFLOW;
+            result = fs_delete_file(path);
+            if (result == 0) return -TLX_ENOENT;
+            if (result < 0) return -TLX_EIS_DIR;
+            return 0;
+        case TLX_OP_MKDIR:
+            if (!regs->ecx) return -TLX_EINVAL;
+            if (!tlx_make_path(context, (const char*)regs->ecx, path)) return -TLX_EOVERFLOW;
+            result = fs_mkdir(path);
+            if (result == 0) return -TLX_ENOSPC;
+            if (result < 0) return -TLX_EEXIST;
             return 0;
         default:
             return -TLX_ENOSYS;

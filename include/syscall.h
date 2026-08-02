@@ -33,6 +33,13 @@
 #define SYS_SET_START_PAGE_ENABLED 28
 #define SYS_GET_TICKS 29
 #define SYS_TLX         30
+#define SYS_PS          31
+#define SYS_MKDIR       32
+#define SYS_DELETE_FILE 33
+#define SYS_GET_VERSION 34
+#define SYS_SET_PRIORITY 35
+#define SYS_GET_PRIORITY 36
+#define SYS_CREATE_FILE 37
 
 // 窗口事件位
 #define WIN_EVENT_FOCUS_CHANGED 0x1

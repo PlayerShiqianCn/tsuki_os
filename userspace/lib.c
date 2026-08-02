@@ -166,6 +166,36 @@ int set_start_page_enabled(int enabled) {
     return _syscall3(SYS_SET_START_PAGE_ENABLED, enabled, 0, 0);
 }
 
+// Process management
+int get_process_list(ProcessInfo* buffer, int max_count) {
+    return _syscall3(SYS_PS, (int)buffer, max_count, 0);
+}
+
+int set_process_priority(int pid, int priority) {
+    return _syscall3(SYS_SET_PRIORITY, pid, priority, 0);
+}
+
+int get_process_priority(int pid) {
+    return _syscall3(SYS_GET_PRIORITY, pid, 0, 0);
+}
+
+// File management
+int create_file(const char* path) {
+    return _syscall3(SYS_CREATE_FILE, (int)path, 0, 0);
+}
+
+int delete_file(const char* path) {
+    return _syscall3(SYS_DELETE_FILE, (int)path, 0, 0);
+}
+
+int make_dir(const char* path) {
+    return _syscall3(SYS_MKDIR, (int)path, 0, 0);
+}
+
+int get_version(char* buffer, int max_len) {
+    return _syscall3(SYS_GET_VERSION, (int)buffer, max_len, 0);
+}
+
 static inline int _tlx_call(int op, int arg1, int arg2, int arg3, int arg4) {
     return _syscall5(SYS_TLX, op, arg1, arg2, arg3, arg4);
 }
@@ -233,3 +263,11 @@ int tlx_spawn(const char* path) {
 int tlx_identity(TlxIdentity* identity) {
     return _tlx_call(TLX_OP_IDENTITY, (int)identity, 0, 0, 0);
 }
+int tlx_unlink(const char* path) {
+    return _tlx_call(TLX_OP_UNLINK, (int)path, 0, 0, 0);
+}
+
+int tlx_mkdir(const char* path) {
+    return _tlx_call(TLX_OP_MKDIR, (int)path, 0, 0, 0);
+}
+

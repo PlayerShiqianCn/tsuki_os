@@ -34,6 +34,17 @@ typedef struct {
     int y; // 用于渲染排版的预留字段
 } StartTile;
 
+// Process info (for ps command)
+typedef struct {
+    int pid;
+    int parent_pid;
+    char name[32];
+    int state;
+    int priority;
+    unsigned int total_ticks;
+} ProcessInfo;
+
+
 typedef struct {
     int present;
     int initialized;
@@ -69,5 +80,17 @@ int net_set_gateway(unsigned char a, unsigned char b, unsigned char c, unsigned 
 int net_set_dns(unsigned char a, unsigned char b, unsigned char c, unsigned char d);
 int set_wallpaper_style(int style);
 int set_start_page_enabled(int enabled);
+
+// Process management
+int get_process_list(ProcessInfo* buffer, int max_count);
+int set_process_priority(int pid, int priority);
+int get_process_priority(int pid);
+// File management
+int create_file(const char* path);
+int delete_file(const char* path);
+int make_dir(const char* path);
+// System info
+int get_version(char* buffer, int max_len);
+
 
 #endif
