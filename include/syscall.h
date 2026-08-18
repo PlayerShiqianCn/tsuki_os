@@ -43,6 +43,13 @@
 #define SYS_LAUNCH_TSK_EX 38
 #define SYS_BLIT_RGB      39
 #define SYS_GET_VIDEO_STATS 40
+#define SYS_DRAW_ROUNDED_RECT_RGB 41
+#define SYS_MEASURE_TEXT 42
+#define SYS_DRAW_TEXT_RGB 43
+#define SYS_RENAME       44
+#define SYS_MOVE         45
+#define SYS_WIN_RESIZE   46
+#define SYS_WIN_GET_SIZE 47
 
 #define TSK_LAUNCH_ACTIVATE     0
 #define TSK_LAUNCH_NEW_INSTANCE 1
@@ -58,6 +65,15 @@ typedef struct {
     int dst_width;
     int dst_height;
 } RgbBlitArgs;
+
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+    int radius;
+    unsigned int rgb;
+} RoundedRectArgs;
 
 typedef struct {
     unsigned int frames;

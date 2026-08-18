@@ -15,6 +15,7 @@ __asm__(".code32");
 #include "net.h"
 #include "console.h"
 #include "paging.h"
+#include "font.h"
 
 // 声明外部函数
 extern void init_timer(int freq);
@@ -54,7 +55,16 @@ void main() {
     paging_init();
     klog_write("paging init");
     video_init();
-    klog_write("video init");
+    if (video_is_lfb_ready()) {
+        int video_w = 0;
+        int video_h = 0;
+        video_get_resolution(&video_w, &video_h);
+        if (video_w == 1920 && video_h == 1080) klog_write("video lfb 1920x1080");
+        else if (video_w == 1280 && video_h == 720) klog_write("video lfb 1280x720");
+        else klog_write("video lfb ready");
+    } else {
+        klog_write("video vga fallback");
+    }
 
     // 2. 初始化进程系统 (将自己标记为 PID 0)
     process_init();
@@ -74,6 +84,8 @@ void main() {
         kpanic("filesystem init failed");
     }
     klog_write("fs init");
+
+    font_init();
 
     kernel_reload_system_config();
     klog_write("config init");

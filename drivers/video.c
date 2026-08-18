@@ -4,6 +4,7 @@
 #include "disk.h"
 #include "heap.h"
 #include "font8x8_basic.h"
+#include "font.h"
 #include "irq.h"
 #include "paging.h"
 
@@ -14,11 +15,16 @@
 #define VBE_DISPI_INDEX_YRES    0x2
 #define VBE_DISPI_INDEX_BPP     0x3
 #define VBE_DISPI_INDEX_ENABLE  0x4
+#define VBE_DISPI_INDEX_VIDEO_MEMORY_64K 0x0A
 #define VBE_DISPI_DISABLED      0x00
 #define VBE_DISPI_ENABLED       0x01
 #define VBE_DISPI_LFB_ENABLED   0x40
 #define VBE_DISPI_ID0           0xB0C0
 #define VBE_DISPI_ID5           0xB0C5
+
+#if (SCREEN_WIDTH * SCREEN_HEIGHT * 4) > (MP_KLOG_BASE - MP_VIDEO_BACK_BUFFER_BASE)
+#error "Logical framebuffer overlaps klog memory; adjust MP_VIDEO_BACK_BUFFER_BASE/MP_KLOG_BASE"
+#endif
 
 static const unsigned int legacy_palette_rgb[16] = {
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
@@ -200,6 +206,8 @@ static int video_resolution_supported(int w, int h) {
     if (w == 640 && h == 480) return 1;
     if (w == 800 && h == 600) return 1;
     if (w == 1024 && h == 768) return 1;
+    if (w == 1280 && h == 720) return 1;
+    if (w == 1920 && h == 1080) return 1;
     return 0;
 }
 
@@ -213,6 +221,8 @@ static void video_invalidate_layout(void) {
 
 static int try_enable_vbe_lfb(int width, int height) {
     unsigned short id = bga_read(VBE_DISPI_INDEX_ID);
+    unsigned short memory_64k;
+    unsigned int required_bytes;
     unsigned int lfb = setup_vga_lfb_base(VBE_LFB_ADDRESS);
     if (id < VBE_DISPI_ID0 || id > VBE_DISPI_ID5) {
         return 0;
@@ -220,6 +230,13 @@ static int try_enable_vbe_lfb(int width, int height) {
     if (!lfb) {
         return 0;
     }
+
+    required_bytes = (unsigned int)width * (unsigned int)height * sizeof(unsigned int);
+    memory_64k = bga_read(VBE_DISPI_INDEX_VIDEO_MEMORY_64K);
+    if (memory_64k && required_bytes > (unsigned int)memory_64k * 65536u) {
+        return 0;
+    }
+
     if (paging_is_enabled() &&
         !paging_map_identity_range(lfb,
             FRAMEBUFFER_MAX_WIDTH * FRAMEBUFFER_MAX_HEIGHT * sizeof(unsigned int))) {
@@ -233,6 +250,13 @@ static int try_enable_vbe_lfb(int width, int height) {
     bga_write(VBE_DISPI_INDEX_YRES, (unsigned short)height);
     bga_write(VBE_DISPI_INDEX_BPP, 32);
     bga_write(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED);
+
+    if (bga_read(VBE_DISPI_INDEX_XRES) != (unsigned short)width ||
+        bga_read(VBE_DISPI_INDEX_YRES) != (unsigned short)height ||
+        bga_read(VBE_DISPI_INDEX_BPP) != 32) {
+        bga_write(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_DISABLED);
+        return 0;
+    }
     return 1;
 }
 
@@ -293,6 +317,10 @@ int video_set_resolution(int w, int h) {
 void video_get_resolution(int* w, int* h) {
     if (w) *w = video_fb_width;
     if (h) *h = video_fb_height;
+}
+
+int video_is_lfb_ready(void) {
+    return video_vbe_ready;
 }
 
 void video_request_redraw(void) {
@@ -364,6 +392,28 @@ void put_pixel_rgb(int x, int y, unsigned int rgb) {
     }
 }
 
+void blend_pixel_rgb(int x, int y, unsigned int rgb, unsigned char alpha) {
+    unsigned int* buf;
+    unsigned int dst;
+    unsigned int sr, sg, sb, dr, dg, db;
+    if (alpha == 0) return;
+    if (x < video_clip.x || x >= video_clip.x + video_clip.w ||
+        y < video_clip.y || y >= video_clip.y + video_clip.h ||
+        x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
+    if (alpha == 255) {
+        put_pixel_rgb(x, y, rgb);
+        return;
+    }
+    buf = video_back_buffer();
+    dst = buf[y * SCREEN_WIDTH + x];
+    sr = (rgb >> 16) & 0xFFu; sg = (rgb >> 8) & 0xFFu; sb = rgb & 0xFFu;
+    dr = (dst >> 16) & 0xFFu; dg = (dst >> 8) & 0xFFu; db = dst & 0xFFu;
+    dr = (dr * (255u - alpha) + sr * alpha + 127u) / 255u;
+    dg = (dg * (255u - alpha) + sg * alpha + 127u) / 255u;
+    db = (db * (255u - alpha) + sb * alpha + 127u) / 255u;
+    buf[y * SCREEN_WIDTH + x] = (dr << 16) | (dg << 8) | db;
+}
+
 void put_pixel(int x, int y, unsigned char color) {
     put_pixel_rgb(x, y, video_color_to_rgb(color));
 }
@@ -393,6 +443,38 @@ void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
         unsigned int* dst = buf + row * SCREEN_WIDTH + x0;
         int cols = x1 - x0;
         while (cols--) *dst++ = rgb;
+    }
+}
+
+void draw_round_rect_rgb(int x, int y, int w, int h, int radius, unsigned int rgb) {
+    int row;
+    int max_radius;
+
+    if (w <= 0 || h <= 0) return;
+    max_radius = (w < h ? w : h) / 2;
+    if (radius < 0) radius = 0;
+    if (radius > max_radius) radius = max_radius;
+    if (radius == 0) {
+        draw_rect_rgb(x, y, w, h, rgb);
+        return;
+    }
+
+    for (row = 0; row < h; row++) {
+        int inset = 0;
+        if (row < radius || row >= h - radius) {
+            int local_y = row < radius ? row : (h - 1 - row);
+            int dy = radius - local_y;
+            int extent = 0;
+            int rr = radius * radius;
+            while (extent < radius &&
+                   (extent + 1) * (extent + 1) + dy * dy <= rr) {
+                extent++;
+            }
+            inset = radius - extent;
+        }
+        if (w - inset * 2 > 0) {
+            draw_rect_rgb(x + inset, y + row, w - inset * 2, 1, rgb);
+        }
     }
 }
 
@@ -438,16 +520,11 @@ static int get_font_index(char c) {
     return 0;
 }
 
-void draw_char(int x, int y, char c, unsigned char color) {
-    unsigned int rgb = video_color_to_rgb(color) & 0x00FFFFFFu;
+static void draw_char_bitmap_rgb(int x, int y, char c, unsigned int rgb) {
     unsigned int* buf = video_back_buffer();
     int font_idx = get_font_index(c);
     int i, j;
-
-    /* Quick reject if entirely off-screen */
-    if (x + 8 <= 0 || x >= SCREEN_WIDTH || y + 8 <= 0 || y >= SCREEN_HEIGHT)
-        return;
-
+    if (x + 8 <= 0 || x >= SCREEN_WIDTH || y + 8 <= 0 || y >= SCREEN_HEIGHT) return;
     for (i = 0; i < 8; i++) {
         unsigned char row_bits = (unsigned char)font8x8_basic[font_idx][i];
         int py = y + i;
@@ -464,12 +541,42 @@ void draw_char(int x, int y, char c, unsigned char color) {
     }
 }
 
-void draw_string(int x, int y, char* str, unsigned char color) {
-    int i = 0;
-    while (str[i] != 0) {
-        draw_char(x + (i * 8), y, str[i], color);
-        i++;
+static void draw_char_rgb_internal(int x, int y, char c, unsigned int rgb) {
+    FontGlyph glyph;
+    rgb &= 0x00FFFFFFu;
+    if (font_get_glyph((unsigned char)c, &glyph)) {
+        for (int row = 0; row < glyph.height; row++) {
+            for (int col = 0; col < glyph.width; col++) {
+                unsigned char alpha = glyph.alpha[row * glyph.stride + col];
+                if (alpha) blend_pixel_rgb(x + glyph.x_offset + col, y + row, rgb, alpha);
+            }
+        }
+        return;
     }
+    draw_char_bitmap_rgb(x, y, c, rgb);
+}
+
+void draw_char(int x, int y, char c, unsigned char color) {
+    draw_char_rgb_internal(x, y, c, video_color_to_rgb(color));
+}
+
+void draw_string_rgb(int x, int y, const char* str, unsigned int rgb) {
+    int cursor = x;
+    int i = 0;
+    if (!str) return;
+    while (str[i] != 0) {
+        FontGlyph glyph;
+        unsigned char c = (unsigned char)str[i++];
+        if (c == '\n') { cursor = x; y += FONT_LINE_HEIGHT; continue; }
+        if (c == '\r') continue;
+        if (c == '\t') { cursor += font_is_ttf_ready() ? 8 : 16; continue; }
+        draw_char_rgb_internal(cursor, y, (char)c, rgb);
+        cursor += font_get_glyph(c, &glyph) ? glyph.advance : 8;
+    }
+}
+
+void draw_string(int x, int y, char* str, unsigned char color) {
+    draw_string_rgb(x, y, str, video_color_to_rgb(color));
 }
 
 void video_swap_buffer_damage(const DamageRect* rects, int count) {

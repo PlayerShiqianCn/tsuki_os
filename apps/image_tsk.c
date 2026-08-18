@@ -1,21 +1,22 @@
 #include "lib.h"
 #include "jpeg.h"
 #include "ui.h"
+#include "theme.h"
 
-#define VIEW_W 296
-#define VIEW_H 158
-#define SIDEBAR_W 108
-#define BUTTON_X 6
-#define SIDEBAR_LABEL_Y 8
-#define BUTTON_Y 22
-#define BUTTON_W 96
-#define BUTTON_H 18
-#define BUTTON_GAP 4
-#define PREVIEW_X 118
-#define PREVIEW_Y 8
-#define PREVIEW_W 172
-#define PREVIEW_H 110
-#define STATUS_Y 142
+#define VIEW_W 558
+#define VIEW_H 291
+#define SIDEBAR_W 170
+#define BUTTON_X 14
+#define SIDEBAR_LABEL_Y 16
+#define BUTTON_Y 42
+#define BUTTON_W 142
+#define BUTTON_H 24
+#define BUTTON_GAP 6
+#define PREVIEW_X 190
+#define PREVIEW_Y 16
+#define PREVIEW_W 348
+#define PREVIEW_H 210
+#define STATUS_Y 270
 #define MAX_IMAGE_FILES 8
 #define MAX_NAME 32
 #define JR32_HEADER_SIZE 12
@@ -269,17 +270,17 @@ static void refresh_image_list(void) {
 }
 
 static void draw_preview(void) {
-    draw_rect(PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, C_LIGHT_GRAY);
-    draw_rect(PREVIEW_X + 1, PREVIEW_Y + 1, PREVIEW_W - 2, PREVIEW_H - 2, C_WHITE);
+    draw_round_rect_rgb(PREVIEW_X, PREVIEW_Y, PREVIEW_W, PREVIEW_H, TSUKI_RADIUS + 2, TSUKI_RGB_BORDER);
+    draw_round_rect_rgb(PREVIEW_X + 1, PREVIEW_Y + 1, PREVIEW_W - 2, PREVIEW_H - 2, TSUKI_RADIUS + 1, TSUKI_RGB_INPUT);
 
     if (!image_loaded || !image_pixels || image_w <= 0 || image_h <= 0) {
-        draw_text(PREVIEW_X + 12, PREVIEW_Y + 48, "No preview", C_DARK_GRAY);
+        draw_text_rgb(PREVIEW_X + 12, PREVIEW_Y + 48, "No preview", TSUKI_RGB_MUTED);
         return;
     }
 
     {
-        int available_w = PREVIEW_W - 8;
-        int available_h = PREVIEW_H - 8;
+        int available_w = PREVIEW_W - 24;
+        int available_h = PREVIEW_H - 24;
         int draw_w = available_w;
         int draw_h = (image_h * draw_w) / image_w;
         RgbBlitArgs args;
@@ -304,25 +305,29 @@ static void draw_preview(void) {
 }
 
 static void draw_focus_line(void) {
-    draw_rect(0, 0, VIEW_W, 1, is_focused ? C_LIGHT_BLUE : C_DARK_GRAY);
+    draw_rect_rgb(0, 0, VIEW_W, 1, is_focused ? TSUKI_RGB_ACCENT : TSUKI_RGB_BORDER);
 }
 
 static void render(void) {
-    draw_rect(0, 0, VIEW_W, VIEW_H, C_LIGHT_GRAY);
+    draw_rect_rgb(0, 0, VIEW_W, VIEW_H, TSUKI_RGB_BG);
     draw_focus_line();
 
-    draw_rect(0, 1, SIDEBAR_W, VIEW_H - 1, C_BLUE);
-    draw_text(8, SIDEBAR_LABEL_Y, "image/", C_WHITE);
+    draw_rect_rgb(0, 1, SIDEBAR_W, VIEW_H - 1, TSUKI_RGB_SURFACE);
+    draw_rect_rgb(SIDEBAR_W - 1, 1, 1, VIEW_H - 1, TSUKI_RGB_BORDER);
+    draw_text_rgb(14, SIDEBAR_LABEL_Y, "Images", TSUKI_RGB_MUTED);
 
     for (int i = 0; i < image_file_count; i++) {
         int y = BUTTON_Y + i * (BUTTON_H + BUTTON_GAP);
         int pressed = (i == selected_index);
-        ui_draw_button(BUTTON_X, y, BUTTON_W, BUTTON_H, image_files[i], C_LIGHT_GRAY, C_BLACK, pressed);
+        ui_draw_button(BUTTON_X, y, BUTTON_W, BUTTON_H, image_files[i], C_DARK_GRAY, C_WHITE, pressed);
+        if (pressed) draw_round_rect_rgb(BUTTON_X + 4, y + 5, 3, BUTTON_H - 10, 1, TSUKI_RGB_ACCENT);
     }
 
     draw_preview();
-    draw_text(PREVIEW_X, PREVIEW_Y + PREVIEW_H + 6, current_name[0] ? current_name : "(none)", C_BLACK);
-    draw_text(6, STATUS_Y, status_line[0] ? status_line : "Ready.", C_WHITE);
+    draw_text_rgb(PREVIEW_X, PREVIEW_Y + PREVIEW_H + 10,
+                  current_name[0] ? current_name : "(none)", TSUKI_RGB_TEXT);
+    draw_rect_rgb(0, STATUS_Y - 8, VIEW_W, 1, TSUKI_RGB_BORDER);
+    draw_text_rgb(14, STATUS_Y, status_line[0] ? status_line : "Ready.", TSUKI_RGB_MUTED);
 }
 
 static void handle_click(int mx, int my) {

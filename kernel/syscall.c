@@ -7,6 +7,7 @@
 #include "window.h"
 #include "ps2.h"
 #include "font8x8_basic.h"
+#include "font.h"
 #include "kernel_config.h"
 #include "net.h"
 #include "tlx_kernel.h"
@@ -248,17 +249,23 @@ static int is_syscall_allowed(SandboxLevel level, unsigned int sysno) {
 
     if (level == SANDBOX_BASIC) {
         // BASIC: 允许常规 GUI/输入/窗口接口
-        if (sysno == SYS_WRITE_FILE) return 0;
+        if (sysno == SYS_WRITE_FILE || sysno == SYS_RENAME || sysno == SYS_MOVE) return 0;
         return 1;
     }
 
     // STRICT: 只保留最小交互能力
     if (sysno == SYS_EXIT ||
         sysno == SYS_DRAW_RECT ||
+        sysno == SYS_DRAW_RECT_RGB ||
+        sysno == SYS_DRAW_ROUNDED_RECT_RGB ||
         sysno == SYS_DRAW_TEXT ||
+        sysno == SYS_DRAW_TEXT_RGB ||
+        sysno == SYS_MEASURE_TEXT ||
         sysno == SYS_BLIT_RGB ||
-        sysno == SYS_DRAW_TEXT ||
         sysno == SYS_GET_KEY ||
+        sysno == SYS_WIN_CREATE ||
+        sysno == SYS_WIN_RESIZE ||
+        sysno == SYS_WIN_GET_SIZE ||
         sysno == SYS_WIN_IS_FOCUSED ||
         sysno == SYS_WIN_GET_EVENT ||
         sysno == SYS_SET_SANDBOX) {
@@ -306,17 +313,30 @@ void sys_draw_rect_sandboxed(int x, int y, int w, int h, int color) {
     video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, w, h);
 }
 
+static unsigned int blend_rgb(unsigned int dst, unsigned int src, unsigned char alpha) {
+    unsigned int sr, sg, sb, dr, dg, db;
+    if (alpha == 0) return dst & 0x00FFFFFFu;
+    if (alpha == 255) return src & 0x00FFFFFFu;
+    sr = (src >> 16) & 0xFFu; sg = (src >> 8) & 0xFFu; sb = src & 0xFFu;
+    dr = (dst >> 16) & 0xFFu; dg = (dst >> 8) & 0xFFu; db = dst & 0xFFu;
+    dr = (dr * (255u - alpha) + sr * alpha + 127u) / 255u;
+    dg = (dg * (255u - alpha) + sg * alpha + 127u) / 255u;
+    db = (db * (255u - alpha) + sb * alpha + 127u) / 255u;
+    return (dr << 16) | (dg << 8) | db;
+}
+
 static int get_font_index(char c) {
     unsigned char uc = (unsigned char)c;
     if (uc < 128) return (int)uc;
     return 0;
 }
 
-static void sys_draw_text_sandboxed(int x, int y, const char* str, int color) {
+static void sys_draw_text_rgb_sandboxed(int x, int y, const char* str, unsigned int rgb) {
     if (!str) return;
+    rgb &= 0x00FFFFFFu;
 
     if (!current_process || !current_process->win) {
-        draw_string(x, y, (char*)str, (unsigned char)color);
+        draw_string_rgb(x, y, str, rgb);
         video_swap_buffer();
         return;
     }
@@ -328,41 +348,58 @@ static void sys_draw_text_sandboxed(int x, int y, const char* str, int color) {
     int client_h = win->borderless ? win->h : (win->h - TITLE_BAR_HEIGHT - BORDER_WIDTH);
     int cursor_x = x;
     int cursor_y = y;
-    unsigned int rgb = video_color_to_rgb((unsigned char)color);
 
     // 只写入窗口缓冲区，由内核主循环统一刷新屏幕
     for (int idx = 0; str[idx] != '\0'; idx++) {
-        char c = str[idx];
+        unsigned char c = (unsigned char)str[idx];
+        FontGlyph glyph;
         if (c == '\n') {
             cursor_x = x;
-            cursor_y += 8;
+            cursor_y += FONT_LINE_HEIGHT;
             continue;
         }
         if (c == '\r') continue;
         if (c == '\t') {
-            cursor_x += 16;
+            cursor_x += font_is_ttf_ready() ? 8 : 16;
             continue;
         }
 
-        int font_idx = get_font_index(c);
-        for (int row = 0; row < 8; row++) {
-            int py = cursor_y + row;
-            if (py < 0 || py >= client_h) continue;
-
-            unsigned char bits = (unsigned char)font8x8_basic[font_idx][row];
-            for (int col = 0; col < 8; col++) {
-                if (((bits >> col) & 1) == 0) continue;
-
-                int px = cursor_x + col;
-                if (px < 0 || px >= client_w) continue;
-
-                win_put_pixel(win, px + offset_x, py + offset_y, rgb);
+        if (font_get_glyph(c, &glyph)) {
+            for (int row = 0; row < glyph.height; row++) {
+                int py = cursor_y + row;
+                if (py < 0 || py >= client_h) continue;
+                for (int col = 0; col < glyph.width; col++) {
+                    int px = cursor_x + glyph.x_offset + col;
+                    unsigned char alpha = glyph.alpha[row * glyph.stride + col];
+                    unsigned int dst;
+                    if (!alpha || px < 0 || px >= client_w) continue;
+                    dst = win_get_pixel(win, px + offset_x, py + offset_y);
+                    win_put_pixel(win, px + offset_x, py + offset_y, blend_rgb(dst, rgb, alpha));
+                }
             }
+            cursor_x += glyph.advance;
+        } else {
+            int font_idx = get_font_index((char)c);
+            for (int row = 0; row < 8; row++) {
+                int py = cursor_y + row;
+                if (py < 0 || py >= client_h) continue;
+                {
+                    unsigned char bits = (unsigned char)font8x8_basic[font_idx][row];
+                    for (int col = 0; col < 8; col++) {
+                        int px = cursor_x + col;
+                        if (((bits >> col) & 1) == 0 || px < 0 || px >= client_w) continue;
+                        win_put_pixel(win, px + offset_x, py + offset_y, rgb);
+                    }
+                }
+            }
+            cursor_x += 8;
         }
-
-        cursor_x += 8;
     }
-    video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, client_w - x, cursor_y - y + 8);
+    video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, client_w - x, cursor_y - y + FONT_LINE_HEIGHT);
+}
+
+static void sys_draw_text_sandboxed(int x, int y, const char* str, int color) {
+    sys_draw_text_rgb_sandboxed(x, y, str, video_color_to_rgb((unsigned char)color));
 }
 
 static void sys_draw_rect_rgb_sandboxed(int x, int y, int w, int h, unsigned int rgb) {
@@ -391,6 +428,71 @@ static void sys_draw_rect_rgb_sandboxed(int x, int y, int w, int h, unsigned int
         }
     }
     video_invalidate_rect(win->x + offset_x + x, win->y + offset_y + y, w, h);
+}
+
+static int rounded_row_inset(int row, int h, int radius) {
+    int local_y;
+    int dy;
+    int extent = 0;
+    int rr;
+
+    if (radius <= 0 || (row >= radius && row < h - radius)) return 0;
+    local_y = row < radius ? row : (h - 1 - row);
+    dy = radius - local_y;
+    rr = radius * radius;
+    while (extent < radius &&
+           (extent + 1) * (extent + 1) + dy * dy <= rr) {
+        extent++;
+    }
+    return radius - extent;
+}
+
+static void sys_draw_round_rect_rgb_sandboxed(const RoundedRectArgs* args) {
+    Window* win;
+    int offset_x, offset_y, client_w, client_h;
+    int radius, max_radius;
+
+    if (!args || args->w <= 0 || args->h <= 0) return;
+
+    max_radius = (args->w < args->h ? args->w : args->h) / 2;
+    radius = args->radius;
+    if (radius < 0) radius = 0;
+    if (radius > max_radius) radius = max_radius;
+
+    if (!current_process || !current_process->win) {
+        draw_round_rect_rgb(args->x, args->y, args->w, args->h, radius, args->rgb);
+        video_swap_buffer();
+        return;
+    }
+
+    win = current_process->win;
+    offset_x = win->borderless ? 0 : BORDER_WIDTH;
+    offset_y = win->borderless ? 0 : TITLE_BAR_HEIGHT;
+    client_w = win->borderless ? win->w : (win->w - BORDER_WIDTH * 2);
+    client_h = win->borderless ? win->h : (win->h - TITLE_BAR_HEIGHT - BORDER_WIDTH);
+
+    for (int row = 0; row < args->h; row++) {
+        int py = args->y + row;
+        int inset;
+        int x0;
+        int x1;
+        if (py < 0 || py >= client_h) continue;
+
+        inset = rounded_row_inset(row, args->h, radius);
+        x0 = args->x + inset;
+        x1 = args->x + args->w - inset;
+        if (x0 < 0) x0 = 0;
+        if (x1 > client_w) x1 = client_w;
+        if (x0 >= x1) continue;
+
+        for (int px = x0; px < x1; px++) {
+            win_put_pixel(win, px + offset_x, py + offset_y, args->rgb);
+        }
+    }
+
+    video_invalidate_rect(win->x + offset_x + args->x,
+                          win->y + offset_y + args->y,
+                          args->w, args->h);
 }
 
 static int sys_blit_rgb_sandboxed(const RgbBlitArgs* args) {
@@ -509,6 +611,16 @@ void syscall_handler(Registers* regs) {
             sys_draw_rect_rgb_sandboxed(regs->ebx, regs->ecx, regs->edx, regs->esi, (unsigned int)regs->edi);
             break;
 
+        case SYS_DRAW_ROUNDED_RECT_RGB:
+            if (regs->ebx) {
+                RoundedRectArgs args = *(const RoundedRectArgs*)regs->ebx;
+                sys_draw_round_rect_rgb_sandboxed(&args);
+                regs->eax = 1;
+            } else {
+                regs->eax = 0;
+            }
+            break;
+
         case SYS_BLIT_RGB:
             regs->eax = sys_blit_rgb_sandboxed((const RgbBlitArgs*)regs->ebx);
             break;
@@ -554,6 +666,15 @@ void syscall_handler(Registers* regs) {
             sys_draw_text_sandboxed(regs->ebx, regs->ecx, (const char*)regs->edx, regs->esi);
             break;
 
+        case SYS_DRAW_TEXT_RGB:
+            // ebx=x, ecx=y, edx=str, esi=0xRRGGBB
+            sys_draw_text_rgb_sandboxed(regs->ebx, regs->ecx, (const char*)regs->edx, (unsigned int)regs->esi);
+            break;
+
+        case SYS_MEASURE_TEXT:
+            regs->eax = font_text_width((const char*)regs->ebx);
+            break;
+
         case SYS_WIN_CREATE:
             // ebx=x, ecx=y, edx=w, esi=h, edi=title
             regs->eax = sys_win_create_sandboxed(
@@ -564,6 +685,27 @@ void syscall_handler(Registers* regs) {
         case SYS_WIN_SET_TITLE:
             // ebx=title
             regs->eax = sys_win_set_title_sandboxed((const char*)regs->ebx);
+            break;
+
+        case SYS_WIN_RESIZE:
+            // ebx = new_w, ecx = new_h
+            if (current_process && current_process->win) {
+                regs->eax = win_resize(current_process->win, regs->ebx, regs->ecx);
+            } else {
+                regs->eax = 0;
+            }
+            break;
+
+        case SYS_WIN_GET_SIZE:
+            // ebx = pointer to int[2] (width, height)
+            if (current_process && current_process->win && regs->ebx) {
+                int* out = (int*)regs->ebx;
+                out[0] = current_process->win->w;
+                out[1] = current_process->win->h;
+                regs->eax = 1;
+            } else {
+                regs->eax = 0;
+            }
             break;
 
         case SYS_WIN_IS_FOCUSED:
@@ -740,6 +882,14 @@ void syscall_handler(Registers* regs) {
 
         case SYS_DELETE_FILE:
             regs->eax = fs_delete_file((const char*)regs->ebx);
+            break;
+
+        case SYS_RENAME:
+            regs->eax = fs_rename((const char*)regs->ebx, (const char*)regs->ecx);
+            break;
+
+        case SYS_MOVE:
+            regs->eax = fs_move((const char*)regs->ebx, (const char*)regs->ecx);
             break;
 
         case SYS_GET_VERSION: {

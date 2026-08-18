@@ -367,7 +367,7 @@ static int tlx_is_restricted(unsigned int op, unsigned int arg1) {
     if (!current_process) return 0;
     if (current_process->sandbox_level == SANDBOX_NONE) return 0;
     if (current_process->sandbox_level == SANDBOX_BASIC) {
-        if (op == TLX_OP_WRITE || op == TLX_OP_SPAWN) return 1;
+        if (op == TLX_OP_WRITE || op == TLX_OP_SPAWN || op == TLX_OP_RENAME) return 1;
         if (op == TLX_OP_OPEN && (arg1 & (TLX_OPEN_WRITE | TLX_OPEN_CREATE | TLX_OPEN_TRUNC))) return 1;
         return 0;
     }
@@ -483,6 +483,16 @@ int tlx_dispatch(Registers* regs) {
             if (result == 0) return -TLX_ENOSPC;
             if (result < 0) return -TLX_EEXIST;
             return 0;
+        case TLX_OP_RENAME: {
+            char new_path_buf[TLX_MAX_PATH];
+            if (!regs->ecx || !regs->edx) return -TLX_EINVAL;
+            if (!tlx_make_path(context, (const char*)regs->ecx, path)) return -TLX_EOVERFLOW;
+            if (!tlx_make_path(context, (const char*)regs->edx, new_path_buf)) return -TLX_EOVERFLOW;
+            result = fs_rename(path, new_path_buf);
+            if (result == 0) return -TLX_ENOENT;
+            if (result < 0) return -TLX_EEXIST;
+            return 0;
+        }
         default:
             return -TLX_ENOSYS;
     }

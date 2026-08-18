@@ -1,23 +1,32 @@
 #include "lib.h"
 #include "ui.h"
 
-#define TERM_CLIENT_W 236
-#define TERM_CLIENT_H 148
-#define TERM_PADDING 4
-#define TERM_SCROLL_W 16
-#define TERM_INPUT_X 2
-#define TERM_INPUT_W (TERM_CLIENT_W - 4)
-#define TERM_INPUT_H 18
-#define TERM_INPUT_Y (TERM_CLIENT_H - TERM_INPUT_H - 2)
-#define TERM_COLS ((TERM_CLIENT_W - TERM_SCROLL_W - TERM_PADDING - 4) / 8)
-#define TERM_OUTPUT_ROWS ((TERM_INPUT_Y - TERM_PADDING) / 8)
+// Base layout constants (unchanged by resize)
+#define TERM_PADDING 10
+#define TERM_SCROLL_W 20
+#define TERM_INPUT_X 10
+#define TERM_INPUT_H 28
+#define TERM_ROW_HEIGHT 14
 #define INPUT_MAX 64
 #define FILE_BUF_SIZE 2048
 #define NET_HTTP_BUF_SIZE 1536
 #define HISTORY_MAX 100
+#define HISTORY_MAX_COLS 120
 #define HIDDEN_SUFFIX "._hid_"
 
-static char history[HISTORY_MAX][TERM_COLS + 1];
+// Default dimensions (used before first win_get_size or as fallback)
+#define TERM_DEFAULT_W 518
+#define TERM_DEFAULT_H 271
+
+// Dynamic layout globals — recomputed by recompute_layout()
+static int term_client_w = TERM_DEFAULT_W;
+static int term_client_h = TERM_DEFAULT_H;
+static int term_input_w = TERM_DEFAULT_W - 20;
+static int term_input_y = TERM_DEFAULT_H - TERM_INPUT_H - 10;
+static int term_cols = (TERM_DEFAULT_W - TERM_SCROLL_W - TERM_PADDING * 2) / 8;
+static int term_output_rows = ((TERM_DEFAULT_H - TERM_INPUT_H - 10) - TERM_PADDING) / TERM_ROW_HEIGHT;
+
+static char history[HISTORY_MAX][HISTORY_MAX_COLS + 1];
 static int history_count = 0;
 static int view_start_row = 0;
 
@@ -29,6 +38,16 @@ static int sudo_mode = 0;
 static char current_dir[INPUT_MAX];
 static char net_http_buf[NET_HTTP_BUF_SIZE];
 
+// Command history (most recent at index 0)
+#define CMD_HISTORY_MAX 32
+static char cmd_history[CMD_HISTORY_MAX][INPUT_MAX];
+static int cmd_history_count = 0;
+static int cmd_history_pos = 0;  // 0 = current/new input, 1 = most recent, ...
+// Draft of input being typed before navigating history; restored on KEY_DOWN back to 0
+static char cmd_draft[INPUT_MAX];
+static int cmd_draft_len = 0;
+static int cmd_draft_saved = 0;  // 1 once draft has been snapshotted
+
 void main();
 static void push_char(char ch);
 static void write_int(int value);
@@ -37,6 +56,7 @@ static void write_line(const char* s);
 static void s_copy(char* dst, const char* src, int max);
 static void s_append(char* dst, const char* src, int max);
 static void print_system_version(void);
+static void recompute_layout(void);
 
 __attribute__((naked)) void _start() {
     __asm__ volatile (
@@ -476,7 +496,7 @@ static void push_char(char ch) {
         } else {
             // 历史记录满了，整体上移
             for (int i = 1; i < HISTORY_MAX; i++) {
-                for (int j = 0; j <= TERM_COLS; j++) {
+                for (int j = 0; j <= HISTORY_MAX_COLS; j++) {
                     history[i - 1][j] = history[i][j];
                 }
             }
@@ -484,7 +504,7 @@ static void push_char(char ch) {
         }
         
         // 如果原本在最底部，则自动滚动跟随
-        int max_view = history_count - TERM_OUTPUT_ROWS;
+        int max_view = history_count - term_output_rows;
         if (max_view < 0) max_view = 0;
         
         // 允许有一行误差的跟随
@@ -503,7 +523,7 @@ static void push_char(char ch) {
         ch = '.';
     }
     
-    if (out_col >= TERM_COLS) {
+    if (out_col >= term_cols) {
         push_char('\n');
         current_row = history_count - 1; // 重新获取行号
     }
@@ -651,32 +671,69 @@ static void print_sysinfo(void) {
     print_ps();
 }
 
+// Recompute layout globals from the actual window client-area size.
+// Falls back to defaults if the size query fails. After a cols change,
+// existing history lines are simply rendered within the new column count
+// (draw_text clips); the underlying buffer is sized to HISTORY_MAX_COLS.
+static void recompute_layout(void) {
+    int w, h;
+    if (!win_get_size(&w, &h) || w <= 0 || h <= 0) {
+        // Use defaults if query fails
+        w = TERM_DEFAULT_W;
+        h = TERM_DEFAULT_H;
+    }
+    term_client_w = w;
+    term_client_h = h;
+
+    // TERM_COLS = (term_client_w - TERM_SCROLL_W - TERM_PADDING * 2) / 8
+    int new_cols = (term_client_w - TERM_SCROLL_W - TERM_PADDING * 2) / 8;
+    if (new_cols < 8) new_cols = 8;
+    if (new_cols > HISTORY_MAX_COLS) new_cols = HISTORY_MAX_COLS;
+    term_cols = new_cols;
+
+    // TERM_INPUT_W = term_client_w - 20
+    term_input_w = term_client_w - 20;
+
+    // TERM_INPUT_Y = term_client_h - TERM_INPUT_H - 10
+    term_input_y = term_client_h - TERM_INPUT_H - 10;
+    if (term_input_y < 40) term_input_y = 40;
+
+    // TERM_OUTPUT_ROWS = (term_input_y - TERM_PADDING) / TERM_ROW_HEIGHT
+    term_output_rows = (term_input_y - TERM_PADDING) / TERM_ROW_HEIGHT;
+    if (term_output_rows < 1) term_output_rows = 1;
+
+    // Keep view_start_row within valid range after row count change
+    int max_view = history_count - term_output_rows;
+    if (max_view < 0) max_view = 0;
+    if (view_start_row > max_view) view_start_row = max_view;
+}
+
 static void render(void) {
     int accent = is_focused ? 9 : 8;
 
     // 使用真实客户区尺寸，避免右侧/底部被窗口裁掉
-    draw_rect(0, 0, TERM_CLIENT_W, TERM_CLIENT_H, 0);
-    draw_rect(0, 0, TERM_CLIENT_W, 1, accent);
+    draw_rect(0, 0, term_client_w, term_client_h, 0);
+    draw_rect(0, 0, term_client_w, 1, accent);
 
     // 绘制历史记录文本
-    for (int r = 0; r < TERM_OUTPUT_ROWS; r++) {
+    for (int r = 0; r < term_output_rows; r++) {
         int history_idx = view_start_row + r;
         if (history_idx < history_count) {
-            draw_text(TERM_PADDING, TERM_PADDING + r * 8, history[history_idx], 10);
+            draw_text(TERM_PADDING, TERM_PADDING + r * TERM_ROW_HEIGHT, history[history_idx], 10);
         }
     }
 
     // 绘制滑块 (UI库)
-    int slider_x = TERM_CLIENT_W - TERM_SCROLL_W;
+    int slider_x = term_client_w - TERM_SCROLL_W;
     int slider_y = 2;
     int slider_w = TERM_SCROLL_W;
-    int slider_h = TERM_INPUT_Y - slider_y - 2;
+    int slider_h = term_input_y - slider_y - 2;
     
-    int max_view = history_count - TERM_OUTPUT_ROWS;
+    int max_view = history_count - term_output_rows;
     if (max_view < 0) max_view = 0;
     
     ui_draw_slider(slider_x, slider_y, slider_w, slider_h, view_start_row, max_view, 1);
-    draw_rect(0, TERM_INPUT_Y - 2, TERM_CLIENT_W, 1, accent);
+    draw_rect(0, term_input_y - 2, term_client_w, 1, accent);
 
     // 绘制输入框 (UI库)
     char prompt[INPUT_MAX + 8];
@@ -689,7 +746,7 @@ static void render(void) {
         prompt[p++] = prefix[i];
     }
     
-    int max_visible = ((TERM_INPUT_W - 8) / 8) - 1 - prefix_len;
+    int max_visible = ((term_input_w - 8) / 8) - 1 - prefix_len;
     if (max_visible < 1) max_visible = 1;
     int start = (input_len > max_visible) ? (input_len - max_visible) : 0;
     
@@ -698,7 +755,7 @@ static void render(void) {
     }
     prompt[p] = '\0';
     
-    ui_draw_input(TERM_INPUT_X, TERM_INPUT_Y, TERM_INPUT_W, TERM_INPUT_H, prompt, is_focused);
+    ui_draw_input(TERM_INPUT_X, term_input_y, term_input_w, TERM_INPUT_H, prompt, is_focused);
 }
 
 static char* ltrim(char* s) {
@@ -779,6 +836,7 @@ static void run_command_core(char* c, int allow_hidden) {
         write_line("cd <dir>  cat <file>  run [--new] <name>");
         write_line("echo <text>  uptime  sysinfo  ps");
         write_line("mkdir <dir>  touch <file>  rm <file>");
+        write_line("rename <old> <new>");
         write_line("net  ip <a.b.c.d>  gw <a.b.c.d>");
         write_line("dnsip <a.b.c.d>  ping <a.b.c.d>");
         write_line("dns <host>  http <host> [path]");
@@ -907,6 +965,55 @@ static void run_command_core(char* c, int allow_hidden) {
             write_line(real_name);
         } else if (result < 0) {
             write_line("Is a directory.");
+        } else {
+            write_line("No such file.");
+        }
+        return;
+    }
+
+    if (s_ncmp(c, "rename ", 7) == 0) {
+        char* args = ltrim(c + 7);
+        char* space;
+        char* new_name_arg;
+        char old_real[INPUT_MAX];
+        char new_real[INPUT_MAX];
+        int result;
+
+        if (args[0] == '\0') {
+            write_line("Usage: rename <old> <new>");
+            return;
+        }
+
+        space = args;
+        while (*space && *space != ' ') space++;
+        if (*space == '\0') {
+            write_line("Usage: rename <old> <new>");
+            return;
+        }
+        *space = '\0';
+        new_name_arg = ltrim(space + 1);
+        if (new_name_arg[0] == '\0') {
+            write_line("Usage: rename <old> <new>");
+            return;
+        }
+
+        if (!map_input_name_to_real(args, allow_hidden, old_real, sizeof(old_real))) {
+            write_line("Permission denied.");
+            return;
+        }
+        if (!map_input_name_to_real(new_name_arg, allow_hidden, new_real, sizeof(new_real))) {
+            write_line("Permission denied.");
+            return;
+        }
+
+        result = rename_file(old_real, new_real);
+        if (result > 0) {
+            write_text("Renamed ");
+            write_text(old_real);
+            write_text(" -> ");
+            write_line(new_real);
+        } else if (result < 0) {
+            write_line("Target already exists.");
         } else {
             write_line("No such file.");
         }
@@ -1219,6 +1326,9 @@ void main() {
     set_sandbox(1);
     win_set_title("terminal.tsk");
 
+    // Query the actual window size and compute layout before first render
+    recompute_layout();
+
     clear_output();
     input_buf[0] = '\0';
     input_len = 0;
@@ -1231,17 +1341,33 @@ void main() {
 
     while (1) {
         sleep(1);
+
+        // Check if window was resized and recompute layout if so
+        {
+            static int last_w = 0, last_h = 0;
+            int cur_w, cur_h;
+            if (win_get_size(&cur_w, &cur_h)) {
+                if (last_w == 0) { last_w = cur_w; last_h = cur_h; } // first time
+                if (cur_w != last_w || cur_h != last_h) {
+                    last_w = cur_w;
+                    last_h = cur_h;
+                    recompute_layout();
+                    render();
+                }
+            }
+        }
+
         int mx, my;
         if (get_mouse_click(&mx, &my)) {
             // 检查是不是点击了滑块区域
-            int slider_x = TERM_CLIENT_W - TERM_SCROLL_W;
+            int slider_x = term_client_w - TERM_SCROLL_W;
             int slider_y = 2;
             int slider_w = TERM_SCROLL_W;
-            int slider_h = TERM_INPUT_Y - slider_y - 2;
+            int slider_h = term_input_y - slider_y - 2;
             
             if (ui_is_clicked(mx, my, slider_x, slider_y, slider_w, slider_h)) {
                 // 计算新的滚动位置
-                int max_view = history_count - TERM_OUTPUT_ROWS;
+                int max_view = history_count - term_output_rows;
                 if (max_view > 0) {
                     // 简单的比例映射：滑块内部点击的 Y 坐标映射到 view_start_row
                     int relative_y = my - slider_y;
@@ -1265,8 +1391,47 @@ void main() {
         int key = get_key();
         if (!key) continue;
 
-        // 支持键盘上下键滚动历史 (假设按键码, 根据 ps2.c 可能是特定值)
-        // 在目前的 get_key() 实现中，通常只有可打印字符，但我们可以预留支持。
+        // 方向键: 命令历史导航
+        if (key == KEY_UP) {
+            if (cmd_history_pos < cmd_history_count) {
+                // 首次从 pos 0 上移时，保存当前输入为 draft
+                if (cmd_history_pos == 0) {
+                    s_copy(cmd_draft, input_buf, INPUT_MAX);
+                    cmd_draft_len = input_len;
+                    cmd_draft_saved = 1;
+                }
+                cmd_history_pos++;
+                s_copy(input_buf, cmd_history[cmd_history_pos - 1], INPUT_MAX);
+                input_len = s_len(input_buf);
+            }
+            render();
+            continue;
+        }
+
+        if (key == KEY_DOWN) {
+            if (cmd_history_pos > 0) {
+                cmd_history_pos--;
+                if (cmd_history_pos == 0) {
+                    // 恢复 draft
+                    if (cmd_draft_saved) {
+                        s_copy(input_buf, cmd_draft, INPUT_MAX);
+                        input_len = cmd_draft_len;
+                        cmd_draft_saved = 0;
+                    } else {
+                        input_len = 0;
+                        input_buf[0] = '\0';
+                    }
+                } else {
+                    s_copy(input_buf, cmd_history[cmd_history_pos - 1], INPUT_MAX);
+                    input_len = s_len(input_buf);
+                }
+            }
+            render();
+            continue;
+        }
+
+        // 左右方向键: 暂不处理 (无行内光标移动)
+        if (key == KEY_LEFT || key == KEY_RIGHT) continue;
 
         if (key == '\n') {
             {
@@ -1277,6 +1442,23 @@ void main() {
             write_text(input_buf);
             push_char('\n');
             run_command(input_buf);
+
+            // 保存到命令历史 (非空命令)
+            if (input_len > 0) {
+                // 移除重复项 (若与最新历史相同则跳过)
+                if (cmd_history_count == 0 ||
+                    s_cmp(input_buf, cmd_history[0]) != 0) {
+                    // 整体后移
+                    for (int i = CMD_HISTORY_MAX - 1; i > 0; i--) {
+                        s_copy(cmd_history[i], cmd_history[i - 1], INPUT_MAX);
+                    }
+                    s_copy(cmd_history[0], input_buf, INPUT_MAX);
+                    if (cmd_history_count < CMD_HISTORY_MAX) cmd_history_count++;
+                }
+            }
+            // 重置历史位置与 draft
+            cmd_history_pos = 0;
+            cmd_draft_saved = 0;
             input_len = 0;
             input_buf[0] = '\0';
             render();

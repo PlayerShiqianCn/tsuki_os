@@ -1,16 +1,21 @@
 #include "lib.h"
 #include "ui.h"
+#include "theme.h"
 
-#define VIEW_W 296
-#define VIEW_H 158
-#define BUTTON_X 176
-#define BUTTON_W 112
-#define BUTTON_H 18
-#define ROW1_Y 8
-#define ROW2_Y 32
-#define ROW3_Y 56
-#define NET_BTN_Y 80
-#define STATUS_Y 146
+#define VIEW_W 558
+#define VIEW_H 291
+#define BUTTON_X 350
+#define BUTTON_W 190
+#define BUTTON_H 28
+#define ROW1_Y 18
+#define ROW2_Y 58
+#define ROW3_Y 98
+#define NET_BTN_Y 152
+#define NET_BTN_W 164
+#define NET_BTN1_X 18
+#define NET_BTN2_X 197
+#define NET_BTN3_X 376
+#define STATUS_Y 270
 #define FILE_BUF_SIZE 512
 
 #define C_BLACK 0
@@ -39,8 +44,9 @@ static SettingsConfig cfg;
 static int is_focused = 0;
 static char status_line[64];
 
-static const int res_widths[3] = {640, 800, 1024};
-static const int res_heights[3] = {480, 600, 768};
+#define RES_COUNT 5
+static const int res_widths[RES_COUNT] = {640, 800, 1024, 1280, 1920};
+static const int res_heights[RES_COUNT] = {480, 600, 768, 720, 1080};
 static const unsigned char dns_presets[3][4] = {
     {10, 0, 2, 3},
     {1, 1, 1, 1},
@@ -169,17 +175,17 @@ static int parse_ipv4_text(const char* s, unsigned char out[4]) {
 static void set_defaults(void) {
     cfg.start_page_enabled = 1;
     cfg.wallpaper_style = 0;
-    cfg.res_index = 0;
+    cfg.res_index = RES_COUNT - 1;
     cfg.local_ip[0] = 10; cfg.local_ip[1] = 0; cfg.local_ip[2] = 2; cfg.local_ip[3] = 15;
     cfg.gateway_ip[0] = 10; cfg.gateway_ip[1] = 0; cfg.gateway_ip[2] = 2; cfg.gateway_ip[3] = 2;
     cfg.dns_ip[0] = 10; cfg.dns_ip[1] = 0; cfg.dns_ip[2] = 2; cfg.dns_ip[3] = 3;
 }
 
 static int find_res_index(int w, int h) {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < RES_COUNT; i++) {
         if (res_widths[i] == w && res_heights[i] == h) return i;
     }
-    return 0;
+    return RES_COUNT - 1;
 }
 
 static void apply_runtime(void) {
@@ -236,8 +242,8 @@ static void load_config(void) {
     char buf[FILE_BUF_SIZE];
     int read;
     int pos = 0;
-    int screen_w = res_widths[0];
-    int screen_h = res_heights[0];
+    int screen_w = res_widths[RES_COUNT - 1];
+    int screen_h = res_heights[RES_COUNT - 1];
 
     set_defaults();
     read = read_file("system/config.rtsk", buf, sizeof(buf) - 1);
@@ -372,39 +378,42 @@ static void render(void) {
     char dns_button[24];
     char line[40];
 
-    draw_rect(0, 0, VIEW_W, VIEW_H, C_LIGHT_GRAY);
-    draw_rect(0, 0, VIEW_W, 1, is_focused ? C_LIGHT_BLUE : C_DARK_GRAY);
+    draw_rect_rgb(0, 0, VIEW_W, VIEW_H, TSUKI_RGB_BG);
+    draw_rect_rgb(0, 0, VIEW_W, 1, is_focused ? TSUKI_RGB_ACCENT : TSUKI_RGB_BORDER);
 
-    draw_text(8, ROW1_Y + 5, "Start Page", C_BLACK);
+    draw_text_rgb(18, ROW1_Y + 8, "Start Page", TSUKI_RGB_TEXT);
     ui_draw_button(BUTTON_X, ROW1_Y, BUTTON_W, BUTTON_H,
                    cfg.start_page_enabled ? "Enabled" : "Disabled",
-                   cfg.start_page_enabled ? C_GREEN : C_RED, C_WHITE, 0);
+                   C_DARK_GRAY, C_WHITE, 0);
+    draw_round_rect_rgb(BUTTON_X + 8, ROW1_Y + 8, 4, 12, 2,
+                        cfg.start_page_enabled ? TSUKI_RGB_GREEN : TSUKI_RGB_RED);
 
-    draw_text(8, ROW2_Y + 5, "Wallpaper", C_BLACK);
+    draw_text_rgb(18, ROW2_Y + 8, "Wallpaper", TSUKI_RGB_TEXT);
     ui_draw_button(BUTTON_X, ROW2_Y, BUTTON_W, BUTTON_H,
-                   wallpaper_text(), C_BLUE, C_WHITE, 0);
+                   wallpaper_text(), C_DARK_GRAY, C_WHITE, 0);
 
     build_resolution_text(res_text, sizeof(res_text));
-    draw_text(8, ROW3_Y + 5, "Screen Mode", C_BLACK);
+    draw_text_rgb(18, ROW3_Y + 8, "Screen Mode", TSUKI_RGB_TEXT);
     ui_draw_button(BUTTON_X, ROW3_Y, BUTTON_W, BUTTON_H,
-                   res_text, C_CYAN, C_BLACK, 0);
+                   res_text, C_DARK_GRAY, C_WHITE, 0);
 
-    draw_text(8, 72, "Screen mode switches live.", C_DARK_GRAY);
+    draw_text_rgb(18, 134, "Display changes apply immediately.", TSUKI_RGB_MUTED);
+    draw_rect_rgb(18, 143, VIEW_W - 36, 1, TSUKI_RGB_BORDER);
 
-    ui_draw_button(8, NET_BTN_Y, 88, BUTTON_H, "QEMU NAT", C_GREEN, C_WHITE, 0);
+    ui_draw_button(NET_BTN1_X, NET_BTN_Y, NET_BTN_W, BUTTON_H, "QEMU NAT", C_DARK_GRAY, C_WHITE, 0);
     build_dns_button_text(dns_button, sizeof(dns_button));
-    ui_draw_button(104, NET_BTN_Y, 88, BUTTON_H, dns_button, C_YELLOW, C_BLACK, 0);
-    ui_draw_button(200, NET_BTN_Y, 88, BUTTON_H, "Reload", C_BLUE, C_WHITE, 0);
+    ui_draw_button(NET_BTN2_X, NET_BTN_Y, NET_BTN_W, BUTTON_H, dns_button, C_DARK_GRAY, C_WHITE, 0);
+    ui_draw_button(NET_BTN3_X, NET_BTN_Y, NET_BTN_W, BUTTON_H, "Reload", C_DARK_GRAY, C_WHITE, 0);
 
     build_net_line(line, sizeof(line), "IP", cfg.local_ip);
-    draw_text(8, 108, line, C_BLACK);
-    build_net_line(line, sizeof(line), "GW", cfg.gateway_ip);
-    draw_text(8, 118, line, C_BLACK);
+    draw_text_rgb(18, 198, line, TSUKI_RGB_TEXT);
+    build_net_line(line, sizeof(line), "Gateway", cfg.gateway_ip);
+    draw_text_rgb(18, 218, line, TSUKI_RGB_TEXT);
     build_net_line(line, sizeof(line), "DNS", cfg.dns_ip);
-    draw_text(8, 128, line, C_BLACK);
+    draw_text_rgb(18, 238, line, TSUKI_RGB_TEXT);
 
-    draw_text(8, 138, "Changes save to /system/config.rtsk", C_DARK_GRAY);
-    draw_text(8, STATUS_Y, status_line[0] ? status_line : "Ready.", C_BLACK);
+    draw_rect_rgb(0, STATUS_Y - 8, VIEW_W, 1, TSUKI_RGB_BORDER);
+    draw_text_rgb(18, STATUS_Y, status_line[0] ? status_line : "Ready.", TSUKI_RGB_MUTED);
 }
 
 static void toggle_start_page(void) {
@@ -428,7 +437,7 @@ static void cycle_wallpaper(void) {
 }
 
 static void cycle_resolution(void) {
-    cfg.res_index = (cfg.res_index + 1) % 3;
+    cfg.res_index = (cfg.res_index + 1) % RES_COUNT;
     if (save_config()) {
         set_status("Screen mode applied.");
     } else {
@@ -455,19 +464,19 @@ static void handle_click(int mx, int my) {
         return;
     }
 
-    if (ui_is_clicked(mx, my, 8, NET_BTN_Y, 88, BUTTON_H)) {
+    if (ui_is_clicked(mx, my, NET_BTN1_X, NET_BTN_Y, NET_BTN_W, BUTTON_H)) {
         apply_qemu_nat();
         render();
         return;
     }
 
-    if (ui_is_clicked(mx, my, 104, NET_BTN_Y, 88, BUTTON_H)) {
+    if (ui_is_clicked(mx, my, NET_BTN2_X, NET_BTN_Y, NET_BTN_W, BUTTON_H)) {
         dns_cycle();
         render();
         return;
     }
 
-    if (ui_is_clicked(mx, my, 200, NET_BTN_Y, 88, BUTTON_H)) {
+    if (ui_is_clicked(mx, my, NET_BTN3_X, NET_BTN_Y, NET_BTN_W, BUTTON_H)) {
         load_config();
         render();
     }

@@ -6,6 +6,7 @@
 #include "klog.h"
 #include "irq.h"
 #include "kernel_core.h"
+#include "theme.h"
 
 #define WINDOW_PAGE_SIZE 4096
 #define WINDOW_ARENA_PAGES (MP_WINDOW_BUFFER_ARENA_SIZE / WINDOW_PAGE_SIZE)
@@ -22,6 +23,13 @@ static int is_dragging;
 static Window* drag_win;
 static int drag_offset_x, drag_offset_y;
 
+static int is_resizing;
+static Window* resize_win;
+static int resize_start_w, resize_start_h;
+static int resize_start_mx, resize_start_my;
+
+#define RESIZE_GRIP_SIZE 12  /* Size of the resize handle in the bottom-right corner */
+
 static int pool_index(Window* w) {
     for (int i = 0; w && i < MAX_LAYERS; i++) if (&window_pool[i] == w) return i;
     return -1;
@@ -37,6 +45,14 @@ static void invalidate_bounds(const Window* w) {
     else video_invalidate_rect(w->x - BORDER_WIDTH, w->y - BORDER_WIDTH,
                                w->w + BORDER_WIDTH * 2 + 3,
                                w->h + BORDER_WIDTH * 2 + 3);
+}
+
+static int hit_resize_grip(Window* w, int mx, int my) {
+    if (!w || w->borderless) return 0;
+    /* The grip is at the bottom-right corner of the window */
+    int grip_x = w->x + w->w - RESIZE_GRIP_SIZE;
+    int grip_y = w->y + w->h - RESIZE_GRIP_SIZE;
+    return mx >= grip_x && mx < w->x + w->w && my >= grip_y && my < w->y + w->h;
 }
 
 static void finalize_locked(Window* w) {
@@ -65,13 +81,15 @@ static void destroy_locked(Window* w) {
     w->closing = 1;
     w->visible = 0;
     if (drag_win == w) { drag_win = 0; is_dragging = 0; }
-    video_invalidate_rect(0, SCREEN_HEIGHT - 20, SCREEN_WIDTH, 20);
+    if (resize_win == w) { resize_win = 0; is_resizing = 0; }
+    video_invalidate_rect(0, SCREEN_HEIGHT - TSUKI_TASKBAR_HEIGHT, SCREEN_WIDTH, TSUKI_TASKBAR_HEIGHT);
     if (w->ref_count == 0) finalize_locked(w);
 }
 
 void win_init() {
     unsigned int flags = irq_save_disable();
     win_count = 0; is_dragging = 0; drag_win = 0;
+    is_resizing = 0; resize_win = 0;
     next_generation = 1; next_window_id = 1;
     slot_arena_init(&window_pages, WINDOW_ARENA_PAGES);
     for (int i = 0; i < MAX_LAYERS; i++) {
@@ -153,7 +171,7 @@ Window* win_create(int x, int y, int w, int h, char* title, unsigned char color)
     layers[win_count++] = result;
     irq_restore(flags);
     invalidate_bounds(result);
-    video_invalidate_rect(0, SCREEN_HEIGHT - 20, SCREEN_WIDTH, 20);
+    video_invalidate_rect(0, SCREEN_HEIGHT - TSUKI_TASKBAR_HEIGHT, SCREEN_WIDTH, TSUKI_TASKBAR_HEIGHT);
     return result;
 }
 
@@ -166,6 +184,99 @@ unsigned int win_get_pixel(Window* w, int x, int y) {
     if (w && w->buffer && !w->closing && x >= 0 && x < w->w && y >= 0 && y < w->h)
         return w->buffer[y * w->w + x];
     return 0;
+}
+
+int win_resize(Window* w, int new_w, int new_h) {
+    unsigned int flags;
+    int old_w, old_h, old_pages, new_pages, first;
+    unsigned int* new_buffer;
+    unsigned int* old_buffer;
+    int copy_w, copy_h;
+    unsigned int fill;
+
+    if (!w || w->closing || w->borderless) return 0;
+
+    /* Clamp to minimum 64x48 and maximum screen size */
+    if (new_w < 64) new_w = 64;
+    if (new_h < 48) new_h = 48;
+    if (new_w > SCREEN_WIDTH) new_w = SCREEN_WIDTH;
+    if (new_h > SCREEN_HEIGHT) new_h = SCREEN_HEIGHT;
+
+    /* No-op if unchanged */
+    if (new_w == w->w && new_h == w->h) return 1;
+
+    old_w = w->w;
+    old_h = w->h;
+    old_pages = w->buffer_page_count;
+    old_buffer = w->buffer;
+    new_pages = (int)(((unsigned int)new_w * (unsigned int)new_h * sizeof(unsigned int) + WINDOW_PAGE_SIZE - 1) / WINDOW_PAGE_SIZE);
+
+    copy_w = (new_w < old_w) ? new_w : old_w;
+    copy_h = (new_h < old_h) ? new_h : old_h;
+    fill = video_color_to_rgb(w->bg_color);
+
+    flags = irq_save_disable();
+
+    if (new_pages == old_pages) {
+        /* Same page count: reuse the existing buffer. The row stride changes
+         * when width changes, so we must re-pack the overlapping pixel data
+         * row by row. Copy backward (high rows first) so a wider new width
+         * never clobers source rows we have not read yet. */
+        new_buffer = old_buffer;
+        for (int y = copy_h - 1; y >= 0; y--) {
+            for (int x = copy_w - 1; x >= 0; x--)
+                new_buffer[y * new_w + x] = old_buffer[y * old_w + x];
+        }
+        w->w = new_w;
+        w->h = new_h;
+        /* Fill newly exposed columns (if growing wider) */
+        if (new_w > old_w) {
+            for (int y = 0; y < new_h; y++)
+                for (int x = old_w; x < new_w; x++)
+                    new_buffer[y * new_w + x] = fill;
+        }
+        /* Fill newly exposed rows (if growing taller) */
+        if (new_h > old_h) {
+            for (int y = old_h; y < new_h; y++)
+                for (int x = 0; x < new_w; x++)
+                    new_buffer[y * new_w + x] = fill;
+        }
+    } else {
+        /* Page count changed: allocate a new buffer, copy row by row, fill exposed area */
+        first = slot_arena_alloc(&window_pages, new_pages);
+        if (first < 0) { irq_restore(flags); return 0; }
+        new_buffer = page_ptr(first);
+
+        /* Copy overlapping pixel data row by row (stride differs) */
+        for (int y = 0; y < copy_h; y++) {
+            for (int x = 0; x < copy_w; x++)
+                new_buffer[y * new_w + x] = old_buffer[y * old_w + x];
+        }
+        /* Fill newly exposed columns */
+        if (new_w > old_w) {
+            for (int y = 0; y < new_h; y++)
+                for (int x = old_w; x < new_w; x++)
+                    new_buffer[y * new_w + x] = fill;
+        }
+        /* Fill newly exposed rows */
+        if (new_h > old_h) {
+            for (int y = old_h; y < new_h; y++)
+                for (int x = 0; x < new_w; x++)
+                    new_buffer[y * new_w + x] = fill;
+        }
+
+        /* Free old buffer and update window state */
+        slot_arena_free(&window_pages, w->buffer_page_first, w->buffer_page_count);
+        w->buffer_page_first = first;
+        w->buffer_page_count = new_pages;
+        w->buffer = new_buffer;
+        w->w = new_w;
+        w->h = new_h;
+    }
+
+    invalidate_bounds(w);
+    irq_restore(flags);
+    return 1;
 }
 
 int win_snapshot_layers(Window** out, int max_count) {
@@ -213,9 +324,8 @@ void win_draw_all() {
     for (int i = 0; i < count; i++) {
         Window* w = snapshot[i];
         if (!w->borderless) {
-            draw_rect(w->x + 3, w->y + 3, w->w, w->h, C_DARK_GRAY);
-            draw_rect(w->x - BORDER_WIDTH, w->y - BORDER_WIDTH,
-                      w->w + BORDER_WIDTH * 2, w->h + BORDER_WIDTH * 2, C_WHITE);
+            draw_round_rect_rgb(w->x + 3, w->y + 4, w->w, w->h, TSUKI_RADIUS + 2, TSUKI_RGB_SHADOW);
+            draw_round_rect_rgb(w->x - 1, w->y - 1, w->w + 2, w->h + 2, TSUKI_RADIUS + 2, TSUKI_RGB_BORDER);
         }
         if (w->buffer) {
             unsigned int* screen = (unsigned int*)MP_VIDEO_BACK_BUFFER_BASE;
@@ -240,13 +350,34 @@ void win_draw_all() {
 
         if (!w->borderless) {
             int focused = i == count - 1;
-            int by = w->y + (TITLE_BAR_HEIGHT - 11) / 2;
-            draw_rect(w->x, w->y, w->w, TITLE_BAR_HEIGHT,
-                      focused ? C_LIGHT_BLUE : C_BLUE);
-            draw_string(w->x + 4, w->y + (TITLE_BAR_HEIGHT - 8) / 2,
-                        w->title, C_WHITE);
-            draw_rect(w->x + w->w - 14, by, 11, 11, C_WHITE);
-            draw_rect(w->x + w->w - 13, by + 1, 9, 9, C_RED);
+            int close_size = 16;
+            int bx = w->x + w->w - close_size - 8;
+            int by = w->y + (TITLE_BAR_HEIGHT - close_size) / 2;
+            unsigned int title_rgb = focused ? TSUKI_RGB_SURFACE : TSUKI_RGB_CONTROL;
+
+            draw_round_rect_rgb(w->x, w->y, w->w, TITLE_BAR_HEIGHT, TSUKI_RADIUS + 2, title_rgb);
+            draw_rect_rgb(w->x, w->y + TITLE_BAR_HEIGHT - (TSUKI_RADIUS + 2), w->w, TSUKI_RADIUS + 2, title_rgb);
+            draw_rect_rgb(w->x, w->y + TITLE_BAR_HEIGHT - 1, w->w, 1,
+                          focused ? TSUKI_RGB_ACCENT : TSUKI_RGB_BORDER);
+            draw_string_rgb(w->x + 12, w->y + (TITLE_BAR_HEIGHT - TSUKI_FONT_HEIGHT) / 2,
+                            w->title, focused ? TSUKI_RGB_TEXT : TSUKI_RGB_MUTED);
+
+            draw_round_rect_rgb(bx, by, close_size, close_size, close_size / 2,
+                                focused ? TSUKI_RGB_RED : TSUKI_RGB_BORDER);
+            for (int p = 0; p < 6; p++) {
+                put_pixel_rgb(bx + 5 + p, by + 5 + p, TSUKI_RGB_TEXT);
+                put_pixel_rgb(bx + 10 - p, by + 5 + p, TSUKI_RGB_TEXT);
+            }
+
+            /* Resize grip indicator in the bottom-right corner */
+            {
+                int gx = w->x + w->w - RESIZE_GRIP_SIZE;
+                int gy = w->y + w->h - RESIZE_GRIP_SIZE;
+                for (int p = 2; p < RESIZE_GRIP_SIZE - 2; p++)
+                    put_pixel_rgb(gx + p, gy + RESIZE_GRIP_SIZE - 2 - p, TSUKI_RGB_MUTED);
+                for (int p = 4; p < RESIZE_GRIP_SIZE - 2; p++)
+                    put_pixel_rgb(gx + p, gy + RESIZE_GRIP_SIZE - 2 - p, TSUKI_RGB_MUTED);
+            }
         }
         if (w->extra_draw) w->extra_draw(w);
     }
@@ -260,18 +391,26 @@ void win_handle_mouse(ps2_mouse_event_t* event, int mx, int my) {
     flags = irq_save_disable();
     left = event->buttons & 1;
     if (left) {
-        if (!is_dragging) {
+        if (!is_dragging && !is_resizing) {
             for (int i = win_count - 1; i >= 0; i--) {
                 Window* w = layers[i];
                 if (!w || !w->visible || w->closing ||
                     mx < w->x || mx >= w->x + w->w || my < w->y || my >= w->y + w->h) continue;
                 if (!w->borderless) {
-                    int bx = w->x + w->w - 14;
-                    int by = w->y + (TITLE_BAR_HEIGHT - 11) / 2;
-                    if (mx >= bx && mx < bx + 11 && my >= by && my < by + 11) {
+                    int close_size = 16;
+                    int bx = w->x + w->w - close_size - 8;
+                    int by = w->y + (TITLE_BAR_HEIGHT - close_size) / 2;
+                    if (mx >= bx && mx < bx + close_size && my >= by && my < by + close_size) {
                         Process* owner = process_find_by_window(w);
                         if (owner && owner->pid != 0) { klog_write_pair("window close ", owner->name); owner->state = PROCESS_DEAD; owner->win = 0; }
                         destroy_locked(w); irq_restore(flags); return;
+                    }
+                    if (hit_resize_grip(w, mx, my)) {
+                        irq_restore(flags); win_bring_to_front(w); flags = irq_save_disable();
+                        is_resizing = 1; resize_win = w;
+                        resize_start_w = w->w; resize_start_h = w->h;
+                        resize_start_mx = mx; resize_start_my = my;
+                        irq_restore(flags); return;
                     }
                 }
                 irq_restore(flags); win_bring_to_front(w); flags = irq_save_disable();
@@ -288,13 +427,24 @@ void win_handle_mouse(ps2_mouse_event_t* event, int mx, int my) {
                 }
                 irq_restore(flags); return;
             }
+        } else if (is_resizing && resize_win && !resize_win->closing) {
+            int new_w = resize_start_w + (mx - resize_start_mx);
+            int new_h = resize_start_h + (my - resize_start_my);
+            if (new_w < 64) new_w = 64;
+            if (new_h < 48) new_h = 48;
+            if (new_w > SCREEN_WIDTH) new_w = SCREEN_WIDTH;
+            if (new_h > SCREEN_HEIGHT) new_h = SCREEN_HEIGHT;
+            if (new_w != resize_win->w || new_h != resize_win->h) {
+                invalidate_bounds(resize_win);
+                win_resize(resize_win, new_w, new_h);
+            }
         } else if (drag_win && !drag_win->closing) {
             int nx = mx - drag_offset_x, ny = my - drag_offset_y;
             if (drag_win->x != nx || drag_win->y != ny) {
                 invalidate_bounds(drag_win); drag_win->x = nx; drag_win->y = ny; invalidate_bounds(drag_win);
             }
         }
-    } else { is_dragging = 0; drag_win = 0; }
+    } else { is_dragging = 0; drag_win = 0; is_resizing = 0; resize_win = 0; }
     irq_restore(flags);
 }
 

@@ -2,6 +2,20 @@
 #include "syscall.h" // 引用之前的头文件
 #include "lib.h"
 
+// 2个参数的系统调用
+static inline int _syscall2(int num, int arg1, int arg2) {
+    int ret;
+    // GCC 内联汇编
+    // a=eax (num), b=ebx (arg1), c=ecx (arg2)
+    __asm__ volatile (
+        "int $0x80"
+        : "=a" (ret)
+        : "a" (num), "b" (arg1), "c" (arg2)
+        : "memory"
+    );
+    return ret;
+}
+
 // 3个参数的系统调用
 static inline int _syscall3(int num, int arg1, int arg2, int arg3) {
     int ret;
@@ -9,7 +23,7 @@ static inline int _syscall3(int num, int arg1, int arg2, int arg3) {
     // a=eax (num), b=ebx (arg1), c=ecx (arg2), d=edx (arg3)
     __asm__ volatile (
         "int $0x80"
-        : "=a" (ret) 
+        : "=a" (ret)
         : "a" (num), "b" (arg1), "c" (arg2), "d" (arg3)
         : "memory"
     );
@@ -63,12 +77,31 @@ void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb) {
     _syscall5(SYS_DRAW_RECT_RGB, x, y, w, h, (int)rgb);
 }
 
+void draw_round_rect_rgb(int x, int y, int w, int h, int radius, unsigned int rgb) {
+    RoundedRectArgs args;
+    args.x = x;
+    args.y = y;
+    args.w = w;
+    args.h = h;
+    args.radius = radius;
+    args.rgb = rgb;
+    _syscall3(SYS_DRAW_ROUNDED_RECT_RGB, (int)&args, 0, 0);
+}
+
 int draw_rgb(const RgbBlitArgs* args) {
     return _syscall3(SYS_BLIT_RGB, (int)args, 0, 0);
 }
 
 void draw_text(int x, int y, const char* str, int color) {
     _syscall5(SYS_DRAW_TEXT, x, y, (int)str, color, 0);
+}
+
+void draw_text_rgb(int x, int y, const char* str, unsigned int rgb) {
+    _syscall5(SYS_DRAW_TEXT_RGB, x, y, (int)str, (int)rgb, 0);
+}
+
+int measure_text(const char* str) {
+    return _syscall3(SYS_MEASURE_TEXT, (int)str, 0, 0);
 }
 
 int get_key(void) {
@@ -85,6 +118,24 @@ int win_create(int x, int y, int w, int h, const char* title) {
 
 int win_set_title(const char* title) {
     return _syscall3(SYS_WIN_SET_TITLE, (int)title, 0, 0);
+}
+
+int win_resize(int new_w, int new_h) {
+    return _syscall2(SYS_WIN_RESIZE, new_w, new_h);
+}
+
+int win_get_size(int* out_w, int* out_h) {
+    int buf[2] = {0, 0};
+    int result;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(result)
+        : "a"(SYS_WIN_GET_SIZE), "b"((int)buf)
+        : "memory"
+    );
+    if (result && out_w) *out_w = buf[0];
+    if (result && out_h) *out_h = buf[1];
+    return result;
 }
 
 int win_is_focused(void) {
@@ -204,6 +255,10 @@ int make_dir(const char* path) {
     return _syscall3(SYS_MKDIR, (int)path, 0, 0);
 }
 
+int rename_file(const char* old_path, const char* new_path) {
+    return _syscall3(SYS_RENAME, (int)old_path, (int)new_path, 0);
+}
+
 int get_version(char* buffer, int max_len) {
     return _syscall3(SYS_GET_VERSION, (int)buffer, max_len, 0);
 }
@@ -281,4 +336,15 @@ int tlx_unlink(const char* path) {
 
 int tlx_mkdir(const char* path) {
     return _tlx_call(TLX_OP_MKDIR, (int)path, 0, 0, 0);
+}
+
+int tlx_rename(const char* old_path, const char* new_path) {
+    int result;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(result)
+        : "a"(SYS_TLX), "b"(TLX_OP_RENAME), "c"(old_path), "d"(new_path)
+        : "memory"
+    );
+    return result;
 }

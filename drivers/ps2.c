@@ -66,6 +66,7 @@ void ps2_init(void) {
 static int shift_pressed = 0;
 static int caps_lock = 0;
 static int release_prefix = 0;
+static int extended_prefix = 0;  // 0xE0 extended key prefix
 static unsigned char mouse_cycle = 0;
 static unsigned char mouse_packet[3];
 
@@ -110,7 +111,42 @@ void ps2_poll_inputs_once(void) {
         }
     } else {
         unsigned char sc = data;
-        if (sc == 0xE0 || sc == 0xE1) return;
+
+        // 0xE0: 扩展键前缀 (方向键等), 置标志等待下一字节
+        if (sc == 0xE0) {
+            extended_prefix = 1;
+            return;
+        }
+        // 0xE1: Pause/Break 序列, 当前不支持, 丢弃前缀
+        if (sc == 0xE1) return;
+
+        // 处理扩展键的第二字节 (方向键)
+        if (extended_prefix) {
+            extended_prefix = 0;
+
+            // Set-1 扩展键 make 码
+            int ext_released = ((sc & 0x80) != 0);
+            unsigned char ext_sc = sc & 0x7F;
+
+            if (!ext_released) {
+                // 屏蔽 typematic 重复
+                if (!key_down[ext_sc]) {
+                    key_down[ext_sc] = 1;
+                    char kc = 0;
+                    switch (ext_sc) {
+                        case 0x48: kc = (char)KEY_UP; break;    // ↑
+                        case 0x50: kc = (char)KEY_DOWN; break;  // ↓
+                        case 0x4B: kc = (char)KEY_LEFT; break;  // ←
+                        case 0x4D: kc = (char)KEY_RIGHT; break; // →
+                        default: break; // 其它扩展键 (Insert/Home/PgUp 等) 暂不处理
+                    }
+                    if (kc) push_kb_char(kc);
+                }
+            } else {
+                key_down[ext_sc] = 0;
+            }
+            return;
+        }
 
         // 兼容 Set-2 的 break 前缀 (F0)；否则按 Set-1 的 bit7 规则处理
         if (sc == 0xF0) {

@@ -60,6 +60,7 @@
 #define TLX_OP_IDENTITY 16
 #define TLX_OP_UNLINK   17
 #define TLX_OP_MKDIR    18
+#define TLX_OP_RENAME   19
 
 #define TLX_HANDLE_KIND_INPUT  1
 #define TLX_HANDLE_KIND_OUTPUT 2
@@ -110,5 +111,6 @@ int tlx_spawn(const char* path);
 int tlx_identity(TlxIdentity* identity);
 int tlx_unlink(const char* path);
 int tlx_mkdir(const char* path);
+int tlx_rename(const char* old_path, const char* new_path);
 
 #endif

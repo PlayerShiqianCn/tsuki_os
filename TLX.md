@@ -37,6 +37,7 @@ tlx_unlink("old.txt");
 - `tlx_seek` / `tlx_fstat` / `tlx_list`
 - `tlx_unlink` — 删除文件
 - `tlx_mkdir` — 创建目录
+- `tlx_rename` — 重命名文件（支持同目录和跨目录）
 
 ### 进程管理
 - `tlx_getpid` / `tlx_getppid` / `tlx_sleep` / `tlx_yield` / `tlx_clock`
@@ -54,6 +55,7 @@ tlx_unlink("old.txt");
 - 文件写入支持动态块分配：新创建的文件可直接写入，无需 mkfs 预留块。
 - `tlx_unlink` 删除文件并释放数据块。
 - `tlx_mkdir` 创建目录并初始化 `.` 与 `..` 条目。
+- `tlx_rename` 支持同目录原地重命名和跨目录移动。
+- 目录遍历支持多级嵌套路径。
 - 每个进程最多维护 8 个 TLX 文件句柄。
 - 系统同时最多维护 16 个 TLX 进程上下文。
-- 目录仅支持根目录下的单级结构。

@@ -13,12 +13,17 @@ int read_file(const char* filename, void* buffer, unsigned int capacity);
 int write_file(const char* filename, const void* buffer, int size);
 void draw_rect(int x, int y, int w, int h, int color);
 void draw_rect_rgb(int x, int y, int w, int h, unsigned int rgb);
+void draw_round_rect_rgb(int x, int y, int w, int h, int radius, unsigned int rgb);
 int draw_rgb(const RgbBlitArgs* args);
 void draw_text(int x, int y, const char* str, int color);
+void draw_text_rgb(int x, int y, const char* str, unsigned int rgb);
+int measure_text(const char* str);
 int get_key(void);
 void set_sandbox(int level);
 int win_create(int x, int y, int w, int h, const char* title);
 int win_set_title(const char* title);
+int win_resize(int new_w, int new_h);
+int win_get_size(int* out_w, int* out_h);
 int win_is_focused(void);
 int win_get_event(void);
 int list_files(char* buffer, int max_len);
@@ -86,6 +91,12 @@ int net_set_dns(unsigned char a, unsigned char b, unsigned char c, unsigned char
 int set_wallpaper_style(int style);
 int set_start_page_enabled(int enabled);
 
+// Special key codes (returned by get_key(), values >= 0x80, no ASCII conflict)
+#define KEY_UP    0x80
+#define KEY_DOWN  0x81
+#define KEY_LEFT  0x82
+#define KEY_RIGHT 0x83
+
 // Process management
 int get_process_list(ProcessInfo* buffer, int max_count);
 int set_process_priority(int pid, int priority);
@@ -94,6 +105,7 @@ int get_process_priority(int pid);
 int create_file(const char* path);
 int delete_file(const char* path);
 int make_dir(const char* path);
+int rename_file(const char* old_path, const char* new_path);
 // System info
 int get_version(char* buffer, int max_len);
 

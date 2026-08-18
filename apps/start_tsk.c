@@ -1,17 +1,18 @@
 #include "lib.h"
+#include "theme.h"
 
-// 全屏无边框窗口: 320x200
-#define CLIENT_W 320
-#define CLIENT_H 200
+// 全屏无边框窗口: 640x360 logical desktop
+#define CLIENT_W 640
+#define CLIENT_H 360
 
 #define MAX_TILES 16
-#define TILE_W 120
-#define TILE_H 60
-#define TILES_PER_ROW 2
-#define START_X 20
-#define START_Y 50
-#define SPACING_X 140
-#define SPACING_Y 70
+#define TILE_W 132
+#define TILE_H 64
+#define TILES_PER_ROW 4
+#define START_X 28
+#define START_Y 82
+#define SPACING_X 148
+#define SPACING_Y 82
 
 static int selected = 0;
 static StartTile all_tiles[MAX_TILES];
@@ -63,21 +64,23 @@ static void load_tiles(void) {
 }
 
 static void render(void) {
-    draw_rect(0, 0, CLIENT_W, CLIENT_H, 5); // 紫色背景
-    draw_text(20, 14, "TSK Apps", 15);
-    draw_text(20, 30, "Click | Enter | Arrows", 15);
+    draw_rect_rgb(0, 0, CLIENT_W, CLIENT_H, TSUKI_RGB_BG);
+    draw_text_rgb(28, 24, "TSK Apps", TSUKI_RGB_TEXT);
+    draw_text_rgb(28, 44, "Click | Enter | Arrows", TSUKI_RGB_MUTED);
 
     for (int i = 0; i < total_tiles; i++) {
         int x = all_tiles[i].x;
         int y = all_tiles[i].y;
+        unsigned int surface = i == selected ? TSUKI_RGB_CONTROL_HOVER : TSUKI_RGB_SURFACE;
 
         if (i == selected) {
-            draw_rect(x - 3, y - 3, TILE_W + 6, TILE_H + 6, 15);
+            draw_round_rect_rgb(x - 2, y - 2, TILE_W + 4, TILE_H + 4, 7, TSUKI_RGB_ACCENT);
         }
 
-        draw_rect(x, y, TILE_W, TILE_H, all_tiles[i].color);
-        draw_text(x + 12, y + 16, all_tiles[i].title, 15);
-        draw_text(x + 12, y + 34, all_tiles[i].file, 15);
+        draw_round_rect_rgb(x, y, TILE_W, TILE_H, 6, surface);
+        draw_rect(x + 8, y + 10, 2, TILE_H - 20, all_tiles[i].color);
+        draw_text_rgb(x + 16, y + 16, all_tiles[i].title, TSUKI_RGB_TEXT);
+        draw_text_rgb(x + 16, y + 34, all_tiles[i].file, TSUKI_RGB_MUTED);
     }
 }
 

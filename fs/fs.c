@@ -77,71 +77,162 @@ static const char* path_leaf(const char* path) {
     return leaf;
 }
 
-static int split_lookup_path(const char* path, char* dir, int dir_max, char* name, int name_max) {
-    const char* slash;
-    const char* rest;
-    int dir_len;
-    int name_len;
+// 多级路径解析：从 EXT2_ROOT_INODE 出发，逐段解析以 '/' 分隔的路径。
+// 解析成功时将最终 inode 号写入 *out_inode 并返回 1；失败返回 0。
+// 支持: 前导/连续/尾随斜杠、"."、".."、以及根路径 "/"。
+// 注意: "." 与 ".." 依赖于目录项中存储的 inode 号，因此目录必须包含
+// 正确的 "." 和 ".." 项 (fs_mkdir 会创建它们；根目录的 ".." 指向自身)。
+// 必须在 fs_lock 保护下调用 (内部会读盘)。
+static int resolve_path(const char* path, unsigned int* out_inode) {
+    unsigned int cur_inode;
+    const char* p;
 
-    if (!path || !dir || !name || dir_max <= 0 || name_max <= 0) return 0;
-    while (*path == '/') path++;
-    if (*path == '\0') return 0;
+    if (!path || !out_inode) return 0;
+    cur_inode = EXT2_ROOT_INODE;
 
-    dir[0] = '\0';
-    name[0] = '\0';
+    // 跳过前导斜杠
+    p = path;
+    while (*p == '/') p++;
 
-    slash = 0;
-    for (int i = 0; path[i]; i++) {
-        if (path[i] == '/') {
-            slash = path + i;
-            break;
-        }
-    }
-
-    if (!slash) {
-        name_len = strlen(path);
-        if (name_len >= name_max) name_len = name_max - 1;
-        memcpy(name, path, name_len);
-        name[name_len] = '\0';
+    // 空路径或纯斜杠视为根目录
+    if (*p == '\0') {
+        *out_inode = EXT2_ROOT_INODE;
         return 1;
     }
 
-    dir_len = (int)(slash - path);
-    if (dir_len <= 0 || slash[1] == '\0') return 0;
-    rest = slash + 1;
-    for (int i = 0; rest[i]; i++) {
-        if (rest[i] == '/') return 0;
-    }
-    if (dir_len >= dir_max) dir_len = dir_max - 1;
-    memcpy(dir, path, dir_len);
-    dir[dir_len] = '\0';
+    while (*p) {
+        char comp[256];
+        int clen = 0;
+        unsigned int next_inode;
 
-    name_len = strlen(rest);
-    if (name_len >= name_max) name_len = name_max - 1;
-    memcpy(name, rest, name_len);
-    name[name_len] = '\0';
+        // 提取一个路径分量
+        while (*p && *p != '/' && clen < (int)sizeof(comp) - 1) {
+            comp[clen++] = *p++;
+        }
+        comp[clen] = '\0';
+
+        // 跳过连续斜杠
+        while (*p == '/') p++;
+
+        if (clen == 0) continue; // 不应发生，但保持防御
+
+        // "." 保持当前目录
+        if (strcmp(comp, ".") == 0) {
+            // 若这是最后一个分量，则当前 inode 即为结果
+            if (*p == '\0') {
+                *out_inode = cur_inode;
+                return 1;
+            }
+            continue;
+        }
+
+        // ".." 取当前目录的父目录项。注意 "."/".." 必须存在于目录块中。
+        if (strcmp(comp, "..") == 0) {
+            next_inode = find_file_in_dir("..", cur_inode);
+            if (!next_inode) {
+                // 未找到 ".."：若已是根，停留在根；否则失败
+                if (cur_inode == EXT2_ROOT_INODE) {
+                    if (*p == '\0') {
+                        *out_inode = EXT2_ROOT_INODE;
+                        return 1;
+                    }
+                    continue;
+                }
+                klog_write_pair("resolve .. fail ", path);
+                return 0;
+            }
+            cur_inode = next_inode;
+            if (*p == '\0') {
+                *out_inode = cur_inode;
+                return 1;
+            }
+            continue;
+        }
+
+        // 普通分量：在当前目录中查找
+        next_inode = find_file_in_dir(comp, cur_inode);
+        if (!next_inode) {
+            klog_write_pair("resolve miss ", comp);
+            return 0;
+        }
+        cur_inode = next_inode;
+
+        if (*p == '\0') {
+            *out_inode = cur_inode;
+            return 1;
+        }
+    }
+
+    // 理论上不会到达这里 (循环在 *p=='\0' 时即返回)
+    *out_inode = cur_inode;
     return 1;
 }
 
-static unsigned int resolve_dir_inode(const char* dir_path) {
-    char dir_name[FS_FILENAME_LEN];
+// 解析 path 的父目录，返回父目录 inode 号，并将最后一段分量 (文件/目录名)
+// 写入 out_name。例如 "system/config.rtsk" -> 父目录 "system" 的 inode，
+// out_name="config.rtsk"；"readme.txt" -> 父目录为根，out_name="readme.txt"。
+// 失败返回 0。必须在 fs_lock 保护下调用。
+static unsigned int resolve_parent_path(const char* path, char* out_name, int name_max) {
+    const char* p;
+    const char* last_start;
+    const char* last_end;
+    int name_len;
 
-    if (!dir_path || dir_path[0] == '\0') return EXT2_ROOT_INODE;
-    while (*dir_path == '/') dir_path++;
-    if (*dir_path == '\0') return EXT2_ROOT_INODE;
-    if (strcmp(dir_path, ".") == 0) return EXT2_ROOT_INODE;
+    if (!path || !out_name || name_max <= 0) return 0;
+    out_name[0] = '\0';
 
-    {
-        int i = 0;
-        while (dir_path[i] && dir_path[i] != '/' && i < FS_FILENAME_LEN - 1) {
-            dir_name[i] = dir_path[i];
-            i++;
-        }
-        dir_name[i] = '\0';
-        if (dir_path[i] != '\0') return 0;
+    p = path;
+    while (*p == '/') p++;
+    if (*p == '\0') return 0; // 没有分量
+
+    // 找到最后一个非空分量
+    last_start = 0;
+    while (*p) {
+        const char* seg_start = p;
+        while (*p && *p != '/') p++;
+        const char* seg_end = p;
+        while (*p == '/') p++;
+        // 跳过纯 "." 与 ".." 作为叶子的情形: 它们不应作为要创建/删除的名字,
+        // 但若路径以它们结尾，这里仍按最后一段处理 (后续查找会自然失败/成功)。
+        last_start = seg_start;
+        last_end = seg_end;
     }
 
-    return find_file_in_dir(dir_name, EXT2_ROOT_INODE);
+    if (!last_start) return 0;
+
+    name_len = (int)(last_end - last_start);
+    if (name_len <= 0) return 0;
+    if (name_len >= name_max) name_len = name_max - 1;
+    memcpy(out_name, last_start, name_len);
+    out_name[name_len] = '\0';
+
+    // 父目录路径 = 去掉最后一段后的前缀
+    {
+        char parent_path[512];
+        int parent_len = (int)(last_start - path);
+        unsigned int parent_inode;
+        // 跳过 path 开头到 last_start 之间的尾部斜杠
+        while (parent_len > 0 && path[parent_len - 1] == '/') parent_len--;
+        if (parent_len <= 0) {
+            // 父目录就是根
+            return EXT2_ROOT_INODE;
+        }
+        if (parent_len >= (int)sizeof(parent_path)) parent_len = (int)sizeof(parent_path) - 1;
+        memcpy(parent_path, path, parent_len);
+        parent_path[parent_len] = '\0';
+
+        if (!resolve_path(parent_path, &parent_inode)) return 0;
+        return parent_inode;
+    }
+}
+
+static unsigned int resolve_dir_inode(const char* dir_path) {
+    unsigned int inode;
+
+    if (!dir_path || dir_path[0] == '\0') return EXT2_ROOT_INODE;
+
+    if (!resolve_path(dir_path, &inode)) return 0;
+    return inode;
 }
 
 static void* resolve_app_load_address(const char* filename) {
@@ -585,10 +676,32 @@ static unsigned int __attribute__((unused)) inode_data_capacity(const Ext2Inode*
     return blocks * 1024;
 }
 
-// 内部：在目录中查找文件名
+// 返回目录 inode 的第 block_index 个数据块号 (支持直接块 0..11 与一级间接块)。
+// block_index 从 0 开始；遍历完成后返回 0。
+// indirect_buf 用于缓存一级间接块内容 (大小至少 1024 字节)。
+static unsigned int dir_block_at(const Ext2Inode* dir_inode, unsigned int block_index,
+                                 unsigned int* indirect_buf) {
+    if (!dir_inode) return 0;
+
+    if (block_index < 12) {
+        return dir_inode->i_block[block_index];
+    }
+
+    if (dir_inode->i_block[12] == 0) return 0;
+    block_index -= 12;
+    if (block_index >= (1024 / 4)) return 0;
+    if (!indirect_buf) return 0;
+
+    read_block(dir_inode->i_block[12], indirect_buf);
+    return indirect_buf[block_index];
+}
+
+// 内部：在目录中查找文件名 (支持多块目录: 直接块 0..11 + 一级间接块)
 static int find_file_in_dir(const char* filename, unsigned int dir_inode_num) {
     Ext2Inode dir_inode;
-    unsigned int pos = 0;
+    unsigned int block_index;
+    unsigned int* indirect_buf = 0;
+    int found = 0;
 
     if (!filename || !read_inode(dir_inode_num, &dir_inode)) {
         klog_write("read inode fail");
@@ -599,35 +712,68 @@ static int find_file_in_dir(const char* filename, unsigned int dir_inode_num) {
         return 0;
     }
 
-    read_block(dir_inode.i_block[0], fs_dir_block_buf);
-    while (pos < 1024) {
-        Ext2DirEntry* entry;
-        unsigned int rec_len;
-        unsigned int name_len;
-        char name[256];
+    indirect_buf = (unsigned int*)malloc(1024);
+    if (!indirect_buf) {
+        // 内存不足时退化为只查第一个块
+        read_block(dir_inode.i_block[0], fs_dir_block_buf);
+        {
+            unsigned int pos = 0;
+            while (pos < 1024) {
+                Ext2DirEntry* entry;
+                unsigned int rec_len;
+                unsigned int name_len;
+                char name[256];
 
-        if (!dir_entry_bounds(fs_dir_block_buf, pos, &rec_len, &name_len)) {
-            klog_write("bad dir entry");
-            return 0;
+                if (!dir_entry_bounds(fs_dir_block_buf, pos, &rec_len, &name_len)) break;
+                entry = (Ext2DirEntry*)(fs_dir_block_buf + pos);
+                for (unsigned int i = 0; i < name_len; i++) name[i] = entry->name[i];
+                name[name_len] = '\0';
+                if (entry->inode != 0 && strcmp(name, filename) == 0) return entry->inode;
+                pos += rec_len;
+            }
         }
-        entry = (Ext2DirEntry*)(fs_dir_block_buf + pos);
-        for (unsigned int i = 0; i < name_len; i++) name[i] = entry->name[i];
-        name[name_len] = '\0';
-
-        if (entry->inode != 0 && strcmp(name, filename) == 0) return entry->inode;
-        pos += rec_len;
+        klog_write_pair("dir miss ", filename);
+        return 0;
     }
 
-    klog_write_pair("dir miss ", filename);
-    return 0;
+    for (block_index = 0; block_index < (12 + 256); block_index++) {
+        unsigned int block_num;
+        unsigned int pos;
+
+        block_num = dir_block_at(&dir_inode, block_index, indirect_buf);
+        if (block_num == 0) break;
+
+        read_block(block_num, fs_dir_block_buf);
+        pos = 0;
+        while (pos < 1024) {
+            Ext2DirEntry* entry;
+            unsigned int rec_len;
+            unsigned int name_len;
+            char name[256];
+
+            if (!dir_entry_bounds(fs_dir_block_buf, pos, &rec_len, &name_len)) break;
+            entry = (Ext2DirEntry*)(fs_dir_block_buf + pos);
+            for (unsigned int i = 0; i < name_len; i++) name[i] = entry->name[i];
+            name[name_len] = '\0';
+
+            if (entry->inode != 0 && strcmp(name, filename) == 0) {
+                found = entry->inode;
+                goto done;
+            }
+            pos += rec_len;
+        }
+    }
+
+done:
+    free(indirect_buf);
+    if (!found) klog_write_pair("dir miss ", filename);
+    return found;
 }
 
 // 打开系统文件 (获取 inode 信息)
 int sys_file_open(const char* filename, SystemFile* out_file) {
-    char dir_name[FS_FILENAME_LEN];
-    char base_name[FS_FILENAME_LEN];
-    unsigned int dir_inode_num;
     unsigned int inode_num;
+    Ext2Inode inode;
 
     fs_lock_enter();
     if (!fs_ready) {
@@ -635,42 +781,30 @@ int sys_file_open(const char* filename, SystemFile* out_file) {
         return 0;
     }
 
-    if (!split_lookup_path(filename, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
+    if (!filename || !out_file) {
+        klog_write_pair("path bad ", filename ? filename : "(null)");
+        fs_lock_leave();
+        return 0;
+    }
+
+    if (!resolve_path(filename, &inode_num)) {
         klog_write_pair("path bad ", filename);
         fs_lock_leave();
         return 0;
     }
 
-    dir_inode_num = EXT2_ROOT_INODE;
-    if (dir_name[0]) {
-        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
-        if (!dir_inode_num) {
-            klog_write_pair("dir fail ", dir_name);
-            fs_lock_leave();
-            return 0;
-        }
-    }
-
-    inode_num = find_file_in_dir(base_name, dir_inode_num);
-    if (!inode_num) {
-        klog_write_pair("file fail ", base_name);
-        fs_lock_leave();
-        return 0;
-    }
-    
-    Ext2Inode inode;
     if (!read_inode(inode_num, &inode)) {
         klog_write("inode open fail");
         fs_lock_leave();
         return 0;
     }
-    
-    int fn_len = strlen(filename);
-    if(fn_len > FS_FILENAME_LEN - 1) fn_len = FS_FILENAME_LEN - 1;
 
-    for(int i=0; i<fn_len; i++) out_file->filename[i] = filename[i];
+    int fn_len = strlen(filename);
+    if (fn_len > FS_FILENAME_LEN - 1) fn_len = FS_FILENAME_LEN - 1;
+
+    for (int i = 0; i < fn_len; i++) out_file->filename[i] = filename[i];
     out_file->filename[fn_len] = '\0';
-    
+
     out_file->size = inode.i_size;
     out_file->inode_num = inode_num;
     out_file->type = (inode.i_mode & 0xF000) == 0x4000 ? 1 : 0;
@@ -890,14 +1024,14 @@ int app_file_read(AppFile* file, void* buffer, unsigned int size) {
     int bytes_read;
 
     if (!fs_ready || !file) return 0;
-    
+
     unsigned int bytes_to_read;
     if (file->current_pos >= file->sys_file.size) return 0;
 
     bytes_to_read = size;
     if (bytes_to_read > file->sys_file.size - file->current_pos)
         bytes_to_read = file->sys_file.size - file->current_pos;
-    
+
     if (bytes_to_read == 0) return 0;
 
     fs_lock_enter();
@@ -1049,7 +1183,6 @@ int tsk_load(const char* filename, void** out_entry,
 // ===== Public file management API =====
 
 int fs_create_file(const char* path) {
-    char dir_name[FS_FILENAME_LEN];
     char base_name[FS_FILENAME_LEN];
     unsigned int dir_inode_num;
     unsigned int new_inode_num;
@@ -1060,15 +1193,10 @@ int fs_create_file(const char* path) {
         fs_lock_leave();
         return 0;
     }
-    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
-        fs_lock_leave();
-        return 0;
-    }
-    dir_inode_num = EXT2_ROOT_INODE;
-    if (dir_name[0]) {
-        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
-        if (!dir_inode_num) { fs_lock_leave(); return 0; }
-    }
+
+    dir_inode_num = resolve_parent_path(path, base_name, sizeof(base_name));
+    if (!dir_inode_num || base_name[0] == '\0') { fs_lock_leave(); return 0; }
+
     if (find_file_in_dir(base_name, dir_inode_num)) {
         fs_lock_leave();
         return -1;
@@ -1096,7 +1224,6 @@ int fs_create_file(const char* path) {
 }
 
 int fs_delete_file(const char* path) {
-    char dir_name[FS_FILENAME_LEN];
     char base_name[FS_FILENAME_LEN];
     unsigned int dir_inode_num;
     unsigned int inode_num;
@@ -1105,14 +1232,10 @@ int fs_delete_file(const char* path) {
 
     fs_lock_enter();
     if (!fs_ready || !path) { fs_lock_leave(); return 0; }
-    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
-        fs_lock_leave(); return 0;
-    }
-    dir_inode_num = EXT2_ROOT_INODE;
-    if (dir_name[0]) {
-        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
-        if (!dir_inode_num) { fs_lock_leave(); return 0; }
-    }
+
+    dir_inode_num = resolve_parent_path(path, base_name, sizeof(base_name));
+    if (!dir_inode_num || base_name[0] == '\0') { fs_lock_leave(); return 0; }
+
     inode_num = find_file_in_dir(base_name, dir_inode_num);
     if (!inode_num) { fs_lock_leave(); return 0; }
     if (!read_inode(inode_num, &inode)) { fs_lock_leave(); return 0; }
@@ -1147,7 +1270,6 @@ int fs_delete_file(const char* path) {
 }
 
 int fs_mkdir(const char* path) {
-    char dir_name[FS_FILENAME_LEN];
     char base_name[FS_FILENAME_LEN];
     unsigned int dir_inode_num;
     unsigned int new_inode_num;
@@ -1157,14 +1279,10 @@ int fs_mkdir(const char* path) {
 
     fs_lock_enter();
     if (!fs_ready || !path) { fs_lock_leave(); return 0; }
-    if (!split_lookup_path(path, dir_name, sizeof(dir_name), base_name, sizeof(base_name))) {
-        fs_lock_leave(); return 0;
-    }
-    dir_inode_num = EXT2_ROOT_INODE;
-    if (dir_name[0]) {
-        dir_inode_num = find_file_in_dir(dir_name, EXT2_ROOT_INODE);
-        if (!dir_inode_num) { fs_lock_leave(); return 0; }
-    }
+
+    dir_inode_num = resolve_parent_path(path, base_name, sizeof(base_name));
+    if (!dir_inode_num || base_name[0] == '\0') { fs_lock_leave(); return 0; }
+
     if (find_file_in_dir(base_name, dir_inode_num)) { fs_lock_leave(); return -1; }
 
     new_inode_num = alloc_inode();
@@ -1237,6 +1355,180 @@ int fs_mkdir(const char* path) {
 }
 
 
+int fs_rename(const char* old_path, const char* new_path) {
+    char old_base_name[FS_FILENAME_LEN];
+    char new_base_name[FS_FILENAME_LEN];
+    unsigned int old_dir_inode_num;
+    unsigned int new_dir_inode_num;
+    unsigned int file_inode_num;
+    unsigned int old_name_len;
+    unsigned int new_name_len;
+    unsigned int old_actual;
+    unsigned int new_actual;
+    int can_inplace = 0;
+    Ext2Inode file_inode;
+
+    fs_lock_enter();
+    if (!fs_ready || !old_path || !new_path) { fs_lock_leave(); return 0; }
+
+    old_dir_inode_num = resolve_parent_path(old_path, old_base_name, sizeof(old_base_name));
+    if (!old_dir_inode_num || old_base_name[0] == '\0') { fs_lock_leave(); return 0; }
+    new_dir_inode_num = resolve_parent_path(new_path, new_base_name, sizeof(new_base_name));
+    if (!new_dir_inode_num || new_base_name[0] == '\0') { fs_lock_leave(); return 0; }
+
+    file_inode_num = find_file_in_dir(old_base_name, old_dir_inode_num);
+    if (!file_inode_num) { fs_lock_leave(); return 0; }
+
+    if (find_file_in_dir(new_base_name, new_dir_inode_num)) {
+        fs_lock_leave();
+        return -1;
+    }
+
+    old_name_len = strlen(old_base_name);
+    new_name_len = strlen(new_base_name);
+    old_actual = dir_entry_actual_size(old_name_len);
+    new_actual = dir_entry_actual_size(new_name_len);
+
+    if (old_dir_inode_num == new_dir_inode_num) {
+        /* Try in-place update only if new name fits within the old entry's
+         * actual storage (so the following entry's offset is unaffected). */
+        if (new_actual <= old_actual) {
+            Ext2Inode dir_inode;
+            unsigned char* block_buf;
+            unsigned int pos = 0;
+
+            if (!read_inode(old_dir_inode_num, &dir_inode)) { fs_lock_leave(); return 0; }
+            if (dir_inode.i_block[0] == 0) { fs_lock_leave(); return 0; }
+
+            block_buf = (unsigned char*)malloc(1024);
+            if (!block_buf) { fs_lock_leave(); return 0; }
+            read_block(dir_inode.i_block[0], block_buf);
+
+            can_inplace = 0;
+            while (pos < 1024) {
+                Ext2DirEntry* entry;
+                unsigned int rec_len;
+                unsigned int stored_name_len;
+                char entry_name[256];
+                unsigned int i;
+
+                if (!dir_entry_bounds(block_buf, pos, &rec_len, &stored_name_len)) break;
+                entry = (Ext2DirEntry*)(block_buf + pos);
+                for (i = 0; i < stored_name_len; i++) entry_name[i] = entry->name[i];
+                entry_name[i] = '\0';
+
+                if (entry->inode != 0 && strcmp(entry_name, old_base_name) == 0) {
+                    unsigned int pad_len;
+                    unsigned int j;
+
+                    entry->name_len = (unsigned char)new_name_len;
+                    for (j = 0; j < new_name_len; j++) entry->name[j] = new_base_name[j];
+                    pad_len = old_actual - 8 - new_name_len;
+                    for (j = 0; j < pad_len; j++) entry->name[new_name_len + j] = 0;
+                    write_block(dir_inode.i_block[0], block_buf);
+                    can_inplace = 1;
+                    break;
+                }
+                pos += rec_len;
+            }
+            free(block_buf);
+
+            if (can_inplace) {
+                if (read_inode(file_inode_num, &file_inode)) {
+                    file_inode.i_mtime = 1; /* simplified timestamp */
+                    write_inode(file_inode_num, &file_inode);
+                }
+                fs_lock_leave();
+                return 1;
+            }
+            /* fall back to remove+add below */
+        }
+
+        if (!remove_dir_entry(old_dir_inode_num, old_base_name)) {
+            fs_lock_leave();
+            return 0;
+        }
+        if (!add_dir_entry(new_dir_inode_num, file_inode_num, new_base_name, EXT2_FT_REG_FILE)) {
+            /* best-effort restore */
+            add_dir_entry(old_dir_inode_num, file_inode_num, old_base_name, EXT2_FT_REG_FILE);
+            fs_lock_leave();
+            return 0;
+        }
+        if (read_inode(file_inode_num, &file_inode)) {
+            file_inode.i_mtime = 1;
+            write_inode(file_inode_num, &file_inode);
+        }
+        fs_lock_leave();
+        return 1;
+    }
+
+    /* Different directories: remove from old, add to new. */
+    if (!remove_dir_entry(old_dir_inode_num, old_base_name)) {
+        fs_lock_leave();
+        return 0;
+    }
+    if (!add_dir_entry(new_dir_inode_num, file_inode_num, new_base_name, EXT2_FT_REG_FILE)) {
+        /* best-effort restore */
+        add_dir_entry(old_dir_inode_num, file_inode_num, old_base_name, EXT2_FT_REG_FILE);
+        fs_lock_leave();
+        return 0;
+    }
+    if (read_inode(file_inode_num, &file_inode)) {
+        file_inode.i_mtime = 1;
+        write_inode(file_inode_num, &file_inode);
+    }
+    fs_lock_leave();
+    return 1;
+}
+
+
+int fs_move(const char* old_path, const char* new_dir_path) {
+    char old_base_name[FS_FILENAME_LEN];
+    unsigned int old_dir_inode_num;
+    unsigned int new_dir_inode_num;
+    unsigned int file_inode_num;
+    Ext2Inode new_dir_inode;
+    Ext2Inode file_inode;
+
+    fs_lock_enter();
+    if (!fs_ready || !old_path || !new_dir_path) { fs_lock_leave(); return 0; }
+
+    old_dir_inode_num = resolve_parent_path(old_path, old_base_name, sizeof(old_base_name));
+    if (!old_dir_inode_num || old_base_name[0] == '\0') { fs_lock_leave(); return 0; }
+
+    file_inode_num = find_file_in_dir(old_base_name, old_dir_inode_num);
+    if (!file_inode_num) { fs_lock_leave(); return 0; }
+
+    new_dir_inode_num = resolve_dir_inode(new_dir_path);
+    if (!new_dir_inode_num) { fs_lock_leave(); return 0; }
+    if (!read_inode(new_dir_inode_num, &new_dir_inode)) { fs_lock_leave(); return 0; }
+    if ((new_dir_inode.i_mode & 0xF000) != 0x4000 || new_dir_inode.i_block[0] == 0) {
+        fs_lock_leave(); return 0;
+    }
+
+    /* If new name already exists in target directory, fail. */
+    if (find_file_in_dir(old_base_name, new_dir_inode_num)) { fs_lock_leave(); return -1; }
+
+    if (!remove_dir_entry(old_dir_inode_num, old_base_name)) {
+        fs_lock_leave();
+        return 0;
+    }
+    if (!add_dir_entry(new_dir_inode_num, file_inode_num, old_base_name, EXT2_FT_REG_FILE)) {
+        /* best-effort restore */
+        add_dir_entry(old_dir_inode_num, file_inode_num, old_base_name, EXT2_FT_REG_FILE);
+        fs_lock_leave();
+        return 0;
+    }
+    if (read_inode(file_inode_num, &file_inode)) {
+        file_inode.i_mtime = 1;
+        write_inode(file_inode_num, &file_inode);
+    }
+    fs_lock_leave();
+    return 1;
+}
+
+
+
 // 修复后的 fs_list_files
 void fs_list_files() {
     Ext2Inode root_inode;
@@ -1261,54 +1553,107 @@ void fs_list_files() {
 }
 
 
-// 【修复】获取真实的文件列表
+// 【修复】获取真实的文件列表 (支持跨多个数据块的目录)
 int fs_get_file_list(char* buffer, int max_len, const char* dir_path) {
     Ext2Inode dir_inode;
     unsigned int dir_inode_num;
     char* block_buf;
-    unsigned int pos = 0;
+    unsigned int* indirect_buf = 0;
+    unsigned int block_index;
     int buf_idx = 0;
 
     if (!buffer || max_len <= 0) return 0;
     buffer[0] = '\0';
     if (!fs_ready) return 0;
 
+    fs_lock_enter();
     dir_inode_num = resolve_dir_inode(dir_path);
-    if (!dir_inode_num || !read_inode(dir_inode_num, &dir_inode)) return 0;
-    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) return 0;
+    if (!dir_inode_num || !read_inode(dir_inode_num, &dir_inode)) {
+        fs_lock_leave();
+        return 0;
+    }
+    if ((dir_inode.i_mode & 0xF000) != 0x4000 || dir_inode.i_block[0] == 0) {
+        fs_lock_leave();
+        return 0;
+    }
 
     block_buf = (char*)malloc(1024);
-    if (!block_buf) return 0;
-    read_block(dir_inode.i_block[0], block_buf);
+    if (!block_buf) {
+        fs_lock_leave();
+        return 0;
+    }
+    indirect_buf = (unsigned int*)malloc(1024);
+    if (!indirect_buf) {
+        // 退化为只读第一个块
+        unsigned int pos = 0;
+        read_block(dir_inode.i_block[0], block_buf);
+        while (pos < 1024) {
+            Ext2DirEntry* entry;
+            unsigned int rec_len;
+            unsigned int name_len;
+            char name[256];
+            int l;
 
-    while (pos < 1024) {
-        Ext2DirEntry* entry;
-        unsigned int rec_len;
-        unsigned int name_len;
-        char name[256];
-        int l;
+            if (!dir_entry_bounds((const unsigned char*)block_buf, pos, &rec_len, &name_len)) break;
+            entry = (Ext2DirEntry*)(block_buf + pos);
+            l = (int)name_len;
+            for (int i = 0; i < l; i++) name[i] = entry->name[i];
+            name[l] = '\0';
 
-        if (!dir_entry_bounds((const unsigned char*)block_buf, pos, &rec_len, &name_len)) {
-            free(block_buf);
-            return 0;
-        }
-        entry = (Ext2DirEntry*)(block_buf + pos);
-        l = (int)name_len;
-        for (int i = 0; i < l; i++) name[i] = entry->name[i];
-        name[l] = '\0';
-
-        if (entry->inode != 0 && strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
-            int needed = l + 1;
-            if (buf_idx + needed < max_len) {
-                for (int i = 0; i < l; i++) buffer[buf_idx++] = name[i];
-                buffer[buf_idx++] = '\n';
+            if (entry->inode != 0 && strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                int needed = l + 1;
+                if (buf_idx + needed < max_len) {
+                    for (int i = 0; i < l; i++) buffer[buf_idx++] = name[i];
+                    buffer[buf_idx++] = '\n';
+                }
             }
+            pos += rec_len;
         }
-        pos += rec_len;
+        if (buf_idx >= max_len) buf_idx = max_len - 1;
+        buffer[buf_idx] = '\0';
+        free(block_buf);
+        fs_lock_leave();
+        return 1;
+    }
+
+    // 遍历所有直接块 (0..11) 与一级间接块
+    for (block_index = 0; block_index < (12 + 256); block_index++) {
+        unsigned int block_num;
+        unsigned int pos;
+
+        block_num = dir_block_at(&dir_inode, block_index, indirect_buf);
+        if (block_num == 0) break;
+
+        read_block(block_num, block_buf);
+        pos = 0;
+        while (pos < 1024) {
+            Ext2DirEntry* entry;
+            unsigned int rec_len;
+            unsigned int name_len;
+            char name[256];
+            int l;
+
+            if (!dir_entry_bounds((const unsigned char*)block_buf, pos, &rec_len, &name_len)) break;
+            entry = (Ext2DirEntry*)(block_buf + pos);
+            l = (int)name_len;
+            for (int i = 0; i < l; i++) name[i] = entry->name[i];
+            name[l] = '\0';
+
+            if (entry->inode != 0 && strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                int needed = l + 1;
+                if (buf_idx + needed < max_len) {
+                    for (int i = 0; i < l; i++) buffer[buf_idx++] = name[i];
+                    buffer[buf_idx++] = '\n';
+                }
+            }
+            pos += rec_len;
+        }
     }
 
     if (buf_idx >= max_len) buf_idx = max_len - 1;
     buffer[buf_idx] = '\0';
     free(block_buf);
+    free(indirect_buf);
+    fs_lock_leave();
     return 1;
 }

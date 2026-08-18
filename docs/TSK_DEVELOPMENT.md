@@ -82,15 +82,51 @@ if (!win_create(40, 24, 240, 170, "My App")) {
 }
 ```
 
+应用也可以在运行时调整窗口大小：
+
+```c
+win_resize(400, 300);
+```
+
+查询当前窗口客户区尺寸（用于动态布局）：
+
+```c
+int w, h;
+if (win_get_size(&w, &h)) {
+    /* 根据 w, h 重新计算布局 */
+}
+```
+
+用户也可以通过拖拽窗口右下角的手柄来缩放窗口，应用应在事件循环中检测尺寸变化并重新布局。
+
 绘图坐标和鼠标坐标都以窗口客户区左上角为原点。常用接口：
 
 - `draw_rect()`：16 色调色板矩形；
 - `draw_rect_rgb()`：单个 RGB 矩形；
+- `draw_round_rect_rgb()`：24 位 RGB 圆角矩形，适合按钮、卡片和输入框；
 - `draw_rgb()`：批量 RGB 图像，可在一次系统调用中完成最近邻缩放；
-- `draw_text()`：8x8 字体文本；
+- `draw_text()`：文本绘制；存在 `/system/ui.ttf` 时使用内核原生 TrueType 可变字宽渲染，否则回退 8x8 bitmap；
+- `draw_text_rgb()`：与 `draw_text()` 相同，但直接接受 `0xRRGGBB`，用于与 `theme.h` 精确统一文本颜色；
+- `measure_text()`：返回当前字体下的文本像素宽度，用于居中、输入光标和自适应布局；
 - `get_mouse_click()`：读取客户区点击；
 - `win_get_event()`：读取焦点和键盘就绪事件；
 - `sleep()`：阻塞指定 tick，让调度器运行其他任务。
+
+圆角控件可直接使用：
+
+```c
+draw_round_rect_rgb(8, 8, 96, 24, 4, 0x313244);
+```
+
+公共控件主题色定义在 `include/theme.h`，`userspace/ui.c` 已使用这套暗色主题。
+
+默认构建会在宿主存在 Droid Sans 时把它作为 `/system/ui.ttf` 打进镜像。它约 190 KiB，能够放进当前单级间接块文件大小限制，并且比 Narrow 字体更适合 8px 级 UI。也可以显式指定其他 TrueType 字体，但当前文件系统单文件上限约 268 KiB：
+
+```sh
+make UI_FONT=/path/to/font.ttf
+```
+
+当前内核 TTF 子集面向 Basic Latin simple glyph，支持 `cmap format 4`、横向 advance 和 TrueType 二次曲线。小字号采用量化覆盖率，让 320x200 逻辑画布经过整数放大后保持更清晰；未支持的 glyph 会自动回退内置 8x8 字体。字体完成 glyph cache 后会释放原始 TTF 数据。
 
 不要在大图像上逐像素调用 `draw_rect_rgb()`。使用 `RgbBlitArgs`：
 

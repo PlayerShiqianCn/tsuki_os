@@ -2,10 +2,11 @@
 #define WINDOW_H
 
 #include "ps2.h"
+#include "theme.h"
 
 #define MAX_LAYERS 20 // 支持的最大层叠深度
-#define TITLE_BAR_HEIGHT 20
-#define BORDER_WIDTH 2
+#define TITLE_BAR_HEIGHT TSUKI_TITLEBAR_HEIGHT
+#define BORDER_WIDTH TSUKI_BORDER_WIDTH
 
 typedef struct Window {
     int id; // 唯一ID
@@ -34,6 +35,7 @@ void win_destroy(Window* w);
 void win_bring_to_front(Window* w);
 unsigned int win_get_pixel(Window* w, int x, int y);
 int win_set_title(Window* w, const char* title);
+int win_resize(Window* w, int new_w, int new_h);
 int win_get_count();
 Window* win_get_at_layer(int index);
 Window* win_get_focused();

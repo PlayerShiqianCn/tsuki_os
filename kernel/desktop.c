@@ -8,6 +8,7 @@ __asm__(".code32");
 #include "utils.h"
 #include "video.h"
 #include "window.h"
+#include "theme.h"
 
 static int is_start_window(Window* w) {
     return (w && w->title && strcmp(w->title, "start.tsk") == 0);
@@ -25,15 +26,15 @@ static int is_start_open(void) {
 }
 
 static int get_taskbar_button_width(int button_count) {
-    int available = SCREEN_WIDTH - 55;
-    int gap = 2;
+    int available = SCREEN_WIDTH - 76;
+    int gap = 6;
     int width;
 
     if (button_count <= 0) return 0;
 
     width = (available - (button_count - 1) * gap) / button_count;
-    if (width < 8) width = 8;
-    if (width > 96) width = 96;
+    if (width < 72) width = 72;
+    if (width > 150) width = 150;
     return width;
 }
 
@@ -71,17 +72,17 @@ static void format_taskbar_title(const char* title, char* out, int out_size, int
 void desktop_draw_background(void) {
     switch (kernel_get_wallpaper_style()) {
         case 1:
-            draw_rect(0, 0, SCREEN_WIDTH, 120, C_LIGHT_BLUE);
-            draw_rect(0, 120, SCREEN_WIDTH, 80, C_BLUE);
-            draw_rect(18, 18, 32, 12, C_WHITE);
+            draw_rect_rgb(0, 0, SCREEN_WIDTH, 122, 0x20263Au);
+            draw_rect_rgb(0, 122, SCREEN_WIDTH, SCREEN_HEIGHT - 122, 0x181825u);
+            draw_round_rect_rgb(18, 18, 38, 14, 6, 0x2D354Fu);
             break;
         case 2:
-            draw_rect(0, 0, SCREEN_WIDTH, 126, C_LIGHT_GREEN);
-            draw_rect(0, 126, SCREEN_WIDTH, 74, C_GREEN);
-            draw_rect(0, 150, SCREEN_WIDTH, 8, C_BROWN);
+            draw_rect_rgb(0, 0, SCREEN_WIDTH, 126, 0x20312Eu);
+            draw_rect_rgb(0, 126, SCREEN_WIDTH, SCREEN_HEIGHT - 126, 0x182521u);
+            draw_rect_rgb(0, 150, SCREEN_WIDTH, 6, 0x33423Bu);
             break;
         default:
-            draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, C_CYAN);
+            draw_rect_rgb(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, TSUKI_RGB_BG);
             break;
     }
 }
@@ -91,7 +92,7 @@ void desktop_draw_taskbar(void) {
     int count = win_snapshot_layers(snapshot, MAX_LAYERS);
     int visible_count = 0;
     int btn_width;
-    int start_x = 55;
+    int start_x = 72;
 
     for (int i = 0; i < count; i++) {
         if (!is_start_window(snapshot[i])) visible_count++;
@@ -101,22 +102,25 @@ void desktop_draw_taskbar(void) {
         return;
     }
 
-    draw_rect(0, SCREEN_HEIGHT - 20, SCREEN_WIDTH, 20, C_LIGHT_GRAY);
-    draw_rect(0, SCREEN_HEIGHT - 20, 50, 20,
-              kernel_is_start_page_enabled() ? C_DARK_GRAY : C_RED);
-    draw_string(8, SCREEN_HEIGHT - 15,
-                kernel_is_start_page_enabled() ? "TSK" : "OFF", C_WHITE);
+    draw_rect_rgb(0, SCREEN_HEIGHT - TSUKI_TASKBAR_HEIGHT, SCREEN_WIDTH, TSUKI_TASKBAR_HEIGHT, TSUKI_RGB_SURFACE);
+    draw_rect_rgb(0, SCREEN_HEIGHT - TSUKI_TASKBAR_HEIGHT, SCREEN_WIDTH, 1, TSUKI_RGB_BORDER);
+    draw_round_rect_rgb(6, SCREEN_HEIGHT - 25, 56, 20, TSUKI_RADIUS,
+                        kernel_is_start_page_enabled() ? TSUKI_RGB_CONTROL : TSUKI_RGB_RED);
+    draw_string_rgb(18, SCREEN_HEIGHT - 21,
+                    kernel_is_start_page_enabled() ? "TSK" : "OFF", TSUKI_RGB_TEXT);
     btn_width = get_taskbar_button_width(visible_count);
 
     for (int i = 0; i < count; i++) {
         Window* w = snapshot[i];
         char label[16];
         if (!w || !w->visible) continue;
-        draw_rect(start_x, SCREEN_HEIGHT - 18, btn_width, 16, C_WHITE);
+        draw_round_rect_rgb(start_x, SCREEN_HEIGHT - 25, btn_width, 20, TSUKI_RADIUS,
+                            i == count - 1 ? TSUKI_RGB_CONTROL_HOVER : TSUKI_RGB_CONTROL);
         format_taskbar_title(w->title, label, sizeof(label), btn_width);
-        draw_string(start_x + 2, SCREEN_HEIGHT - 14, label, C_BLACK);
-        if (i == count - 1) draw_rect(start_x, SCREEN_HEIGHT - 2, btn_width, 2, C_BLUE);
-        start_x += btn_width + 2;
+        draw_string_rgb(start_x + 8, SCREEN_HEIGHT - 21, label,
+                        i == count - 1 ? TSUKI_RGB_TEXT : TSUKI_RGB_MUTED);
+        if (i == count - 1) draw_round_rect_rgb(start_x + 8, SCREEN_HEIGHT - 4, btn_width - 16, 2, 1, TSUKI_RGB_ACCENT);
+        start_x += btn_width + 6;
     }
     win_release_snapshot(snapshot, count);
 }
@@ -126,11 +130,11 @@ int desktop_handle_taskbar_click(int mx, int my) {
     int count;
     int visible_count = 0;
     int btn_width;
-    int start_x = 55;
+    int start_x = 72;
 
     if (is_start_open()) return 0;
-    if (my < SCREEN_HEIGHT - 20) return 0;
-    if (mx < 50) {
+    if (my < SCREEN_HEIGHT - TSUKI_TASKBAR_HEIGHT) return 0;
+    if (mx < 66) {
         if (!kernel_is_start_page_enabled()) return 1;
         klog_write("start click");
         if (!console_launch_tsk("system/start.tsk")) klog_write("start launch failed");
@@ -150,7 +154,7 @@ int desktop_handle_taskbar_click(int mx, int my) {
             win_release_snapshot(snapshot, count);
             return 1;
         }
-        start_x += btn_width + 2;
+        start_x += btn_width + 6;
     }
     win_release_snapshot(snapshot, count);
     return 0;

@@ -28,6 +28,8 @@ START_REG = $(BUILD_DIR)/start.rtsk
 CONFIG_REG = $(BUILD_DIR)/config.rtsk
 OS_IMAGE = $(BUILD_DIR)/os-image.img
 QEMU_LOG = $(BUILD_DIR)/qemu.log
+UI_FONT ?= /usr/share/fonts/google-droid-sans-fonts/DroidSans.ttf
+UI_FONT_FILE = $(if $(wildcard $(UI_FONT)),$(BUILD_DIR)/ui.ttf,)
 
 define tsk_slot_addr
 $(shell printf '0x%X' $$(( $(TSK_SLOT_BASE) + ($(1) * $(TSK_SLOT_SIZE)) )))
@@ -53,6 +55,7 @@ KERNEL_C_SRCS = \
 	kernel/utils.c \
 	kernel/heap.c \
 	kernel/console.c \
+	kernel/font.c \
 	drivers/disk.c \
 	fs/fs.c \
 	kernel/timer.c \
@@ -80,7 +83,7 @@ SETTINGS_TSK_ELF = $(BUILD_DIR)/settings.tsk.elf
 SETTINGS_TSK = $(BUILD_DIR)/settings.tsk
 TSK_APPS = $(APP_TSK) $(TERMINAL_TSK) $(WM_TSK) $(START_TSK) $(IMAGE_TSK) $(SETTINGS_TSK)
 
-.PHONY: all run clean debug FORCE
+.PHONY: all run clean debug test FORCE
 
 all: $(OS_IMAGE)
 
@@ -118,6 +121,12 @@ $(LIB_TSO): $(BUILD_DIR)/userspace/lib.o
 $(JPEG_TSO): $(BUILD_DIR)/userspace/jpeg.o
 	@mkdir -p $(dir $@)
 	cp -f $< $@
+
+ifneq ($(UI_FONT_FILE),)
+$(UI_FONT_FILE): FORCE $(UI_FONT)
+	@mkdir -p $(dir $@)
+	cp -f $(UI_FONT) $@
+endif
 
 $(APP_TSK_ELF): $(BUILD_DIR)/apps/app.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
 	@mkdir -p $(dir $@)
@@ -182,13 +191,13 @@ $(CONFIG_REG): FORCE
 	@printf "# key=value\n" > $@
 	@printf "wallpaper=default\n" >> $@
 	@printf "start_page=enabled\n" >> $@
-	@printf "screen_w=640\n" >> $@
-	@printf "screen_h=480\n" >> $@
+	@printf "screen_w=1920\n" >> $@
+	@printf "screen_h=1080\n" >> $@
 	@printf "local_ip=10.0.2.15\n" >> $@
 	@printf "gateway=10.0.2.2\n" >> $@
 	@printf "dns=10.0.2.3\n" >> $@
 
-$(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO) $(VERSION_FILE) $(START_REG) $(CONFIG_REG) tsk_girl.jpg
+$(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO) $(VERSION_FILE) $(START_REG) $(CONFIG_REG) $(UI_FONT_FILE) tsk_girl.jpg
 	@mkdir -p $(dir $@)
 	echo "Hello MultiTasking!" > $(HELLO_TXT)
 	rm -rf $(FS_ROOT)
@@ -202,13 +211,14 @@ $(OS_IMAGE): $(BOOT_BIN) $(KERNEL_BIN) $(MKFS) $(TSK_APPS) $(LIB_TSO) $(JPEG_TSO
 	cp -f $(IMAGE_TSK) $(FS_ROOT)/system/image.tsk._hid_
 	cp -f $(LIB_TSO) $(FS_ROOT)/system/lib.tso
 	cp -f $(JPEG_TSO) $(FS_ROOT)/system/jpeg.tso
+	@if [ -n "$(UI_FONT_FILE)" ]; then cp -f $(UI_FONT_FILE) $(FS_ROOT)/system/ui.ttf; fi
 	cp -f tsk_girl.jpg $(FS_ROOT)/image/tsk_girl.jpg
 
-	$(MKFS) $(OS_IMAGE) $(BOOT_BIN) $(KERNEL_BIN) $(APP_TSK) $(TERMINAL_TSK) $(IMAGE_TSK) $(SETTINGS_TSK) $(FS_ROOT)/system/version.txt $(FS_ROOT)/system/start.rtsk $(FS_ROOT)/system/config.rtsk $(FS_ROOT)/system/hello.txt._hid_ $(FS_ROOT)/system/wm.tsk._hid_ $(FS_ROOT)/system/start.tsk._hid_ $(FS_ROOT)/system/lib.tso $(FS_ROOT)/system/jpeg.tso $(FS_ROOT)/system/image.tsk._hid_ $(FS_ROOT)/image/tsk_girl.jpg 
+	$(MKFS) $(OS_IMAGE) $(BOOT_BIN) $(KERNEL_BIN) $(APP_TSK) $(TERMINAL_TSK) $(IMAGE_TSK) $(SETTINGS_TSK) $(FS_ROOT)/system/version.txt $(FS_ROOT)/system/start.rtsk $(FS_ROOT)/system/config.rtsk $(FS_ROOT)/system/hello.txt._hid_ $(FS_ROOT)/system/wm.tsk._hid_ $(FS_ROOT)/system/start.tsk._hid_ $(FS_ROOT)/system/lib.tso $(FS_ROOT)/system/jpeg.tso $(FS_ROOT)/system/image.tsk._hid_ $(if $(UI_FONT_FILE),$(FS_ROOT)/system/ui.ttf) $(FS_ROOT)/image/tsk_girl.jpg
 	truncate -s 10M $(OS_IMAGE)
 
 run: $(OS_IMAGE)
-	qemu-system-i386 -vga std -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)
+	qemu-system-i386 -display gtk,zoom-to-fit=on -vga std -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)
 
 clean:
 	rm -f *.o *.bin *.img *.elf *.tsk *.tsk.elf *.tsk._hid_ *.txt._hid_ *.tso version.txt start.rtsk config.rtsk hello.txt .build_version tsk_girl.png tsk_girl.jrgb._hid_ tsk_girl.jr32._hid_ baseline_test.jpg baseline_test.rgb qemu.log qemu_vbe_test.log
@@ -216,4 +226,7 @@ clean:
 	rm -rf $(BUILD_DIR) .fsroot
 
 debug: $(OS_IMAGE)
-	qemu-system-i386 -vga std -serial stdio -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)
+	qemu-system-i386 -display gtk,zoom-to-fit=on -vga std -serial stdio -d int -D $(QEMU_LOG) -nic user,model=e1000 -drive format=raw,file=$(OS_IMAGE)
+
+test: $(OS_IMAGE)
+	sh tests/run_regressions.sh

@@ -114,8 +114,8 @@ int console_launch_tsk_ex(const char* filename, int flags) {
 
     int w = 220;
     int h = 160;
-    int x = 52 + (app_launch_serial * 18) % 96;
-    int y = 30 + (app_launch_serial * 14) % 70;
+    int x = (SCREEN_WIDTH - w) / 2 + ((app_launch_serial * 18) % 96) - 48;
+    int y = (SCREEN_HEIGHT - h) / 2 + ((app_launch_serial * 14) % 70) - 35;
 
     if (strcmp(file_id, "app.tsk") == 0) {
         w = 200;
@@ -124,15 +124,15 @@ int console_launch_tsk_ex(const char* filename, int flags) {
         w = 240;
         h = 170;
     } else if (strcmp(file_id, "image.tsk") == 0) {
-        w = 300;
-        h = 180;
-        x = 8;
-        y = 6;
-    } else if (strcmp(file_id, "settings.tsk") == 0) {
-        w = 300;
-        h = 180;
-        x = 12;
+        w = 560;
+        h = 320;
+        x = (SCREEN_WIDTH - w) / 2;
         y = 10;
+    } else if (strcmp(file_id, "settings.tsk") == 0) {
+        w = 560;
+        h = 320;
+        x = (SCREEN_WIDTH - w) / 2;
+        y = 12;
     } else if (strcmp(file_id, "start.tsk") == 0) {
         w = SCREEN_WIDTH;
         h = SCREEN_HEIGHT;

@@ -187,6 +187,8 @@ int fs_create_file(const char* path);
 int fs_delete_file(const char* path);
 int fs_mkdir(const char* path);
 int fs_write_file(const char* filename, const void* buffer, unsigned int size);
+int fs_rename(const char* old_path, const char* new_path);
+int fs_move(const char* old_path, const char* new_dir_path);
 
 // 封装接口
 int sys_file_open(const char* filename, SystemFile* out_file);
