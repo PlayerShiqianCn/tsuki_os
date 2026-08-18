@@ -1,5 +1,6 @@
 # Project Tsuki OS
 
+![Tsuki OS 桌面](docs/assets/desktop.png)
 
 ## 文档导航
 
@@ -10,7 +11,7 @@
 
 ## 多窗口与性能
 
-![Tsuki OS 多窗口行为对照](docs/assets/multiwindow-behavior.png)
+![Tsuki OS 多窗口展示](docs/assets/multiwindow-behavior.png)
 
 当前窗口系统支持同一 TSK 的多个独立实例。每个实例保持原链接虚拟地址，同时使用独立页目录和私有物理镜像槽，避免重复启动覆盖仍在运行的代码与全局数据。
 
