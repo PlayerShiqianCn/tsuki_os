@@ -1,7 +1,5 @@
 # Project Tsuki OS
 
-![Tsuki OS 桌面](docs/assets/desktop.png)
-
 ## 文档导航
 
 - [更新日志](CHANGELOG.md)：版本变化、修复和验证记录。
