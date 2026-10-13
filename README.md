@@ -3,6 +3,7 @@
 ## 文档导航
 
 - [更新日志](CHANGELOG.md)：版本变化、修复和验证记录。
+- [计划板](plan.md)：UAC 提权、samain 包管理、工具链自举等在途计划。
 - [TLX 兼容层](TLX.md)：文件、目录和进程兼容接口。
 - [TSK 应用开发指南](docs/TSK_DEVELOPMENT.md)：从最小应用到构建、打包、多实例与调试。
 - [工程结构](PROJECT_STRUCTURE.md)：源码目录和模块说明。
