@@ -1,6 +1,29 @@
 # 更新记录
 
-## 2026-08-18 — v0.5.0 "Deep Paths + Resize"（未发布）
+## 2026-10-13 — v0.5.1 "Clean Splits"
+
+### 终端重构
+
+- **三文件拆分**：`terminal_tsk.c`（1483 行）拆为外壳（374 行）+ 命令层 `terminal_cmd.c` + 共享头 `terminal_internal.h`；跨界仅输出层五个函数、`run_command` 与两个共享状态（`current_dir`/`sudo_mode`）。
+- **命令表驱动**：460 行 if 分发链替换为 `{name, handler}` 命令表（26 条），裸命令统一输出 Usage，`ip`/`gw` 共享实现；新增命令只需一个 handler + 一行表项。
+- **无框输入行**：移除底部输入框与分隔线，提示符与输入以主题色直绘，新增 250ms 闪烁块状光标（仅聚焦时显示，主循环按相位翻转重绘）。
+
+### 用户态 string.h
+
+- 新增 `include/string.h` + `userspace/string.c`：标准 ISO 名（`strlen`/`strcmp`/`strncmp`/`memcpy`/`memmove`/`memset`/`memcmp`/`strchr` 等）+ BSD 风格有界接口 `strlcpy`/`strlcat`/`str_ends_with`。
+- 终端手搓的 `s_len`/`s_cmp`/`s_ncmp`/`s_copy`/`s_append` 全部替换为标准名；全部 6 个应用的链接规则挂上 `string.o`，同时满足 freestanding 下 gcc 隐式 `memcpy`/`memset` 调用的链接需求。
+
+### win_get_size 客户区修正
+
+- **修复**：`SYS_WIN_GET_SIZE` 原返回窗口外框尺寸（含标题栏 28px + 边框 1px），而沙箱绘制按客户区裁剪，两者相差 29px——终端输入行整行画进被裁剪区。现返回与 `sys_draw_*_sandboxed` 公式一致的客户区尺寸（borderless-aware）。
+
+### JPEG 解码器拆分
+
+- 1153 行单文件拆为入口 `jpeg.c`（403 行，probe/基线解码/分发）+ 原语 `jpeg_core.c`（276 行）+ 渐进式 `jpeg_progressive.c`（452 行）+ 共享头 `jpeg_internal.h`；渐进式系数存储不再被基线路径背负。
+- **像素级等价验证**：主机测试台对渐进式样张（FNV1a `6166ab83`）与基线式样张（`e9461dab`）拆前拆后校验和逐位一致。
+- `jpeg.tso` 由三个目标经 `ld -r` 合并后输出，形态保持不变。
+
+## 2026-08-18 — v0.5.0 "Deep Paths + Resize"
 
 ### 窗口缩放
 

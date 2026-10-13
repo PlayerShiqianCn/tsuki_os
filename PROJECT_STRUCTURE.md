@@ -31,7 +31,8 @@
 | `tools/mkfs.c` | 镜像文件系统创建工具 |
 | `tools/make_tsk.c` | `.tsk` 任务镜像打包器 |
 | `userspace/lib.c` / `include/lib.h` | 应用程序库和系统调用封装 |
-| `userspace/jpeg.c` / `include/jpeg.h` | JPEG 解析与解码库 |
+| `userspace/string.c` / `include/string.h` | 用户态字符串/内存原语（freestanding） |
+| `userspace/jpeg.c` + `jpeg_core.c` + `jpeg_progressive.c` | JPEG 解码库：入口/原语/渐进式路径 |
 
 ## 关键数据结构
 

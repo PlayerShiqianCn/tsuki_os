@@ -698,10 +698,12 @@ void syscall_handler(Registers* regs) {
 
         case SYS_WIN_GET_SIZE:
             // ebx = pointer to int[2] (width, height)
+            // 返回客户区尺寸（不含标题栏/边框），与沙箱绘制的可绘制范围一致
             if (current_process && current_process->win && regs->ebx) {
                 int* out = (int*)regs->ebx;
-                out[0] = current_process->win->w;
-                out[1] = current_process->win->h;
+                Window* win = current_process->win;
+                out[0] = win->borderless ? win->w : win->w - BORDER_WIDTH * 2;
+                out[1] = win->borderless ? win->h : win->h - TITLE_BAR_HEIGHT - BORDER_WIDTH;
                 regs->eax = 1;
             } else {
                 regs->eax = 0;

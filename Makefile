@@ -118,7 +118,11 @@ $(LIB_TSO): $(BUILD_DIR)/userspace/lib.o
 	@mkdir -p $(dir $@)
 	cp -f $< $@
 
-$(JPEG_TSO): $(BUILD_DIR)/userspace/jpeg.o
+$(BUILD_DIR)/userspace/jpeg_merged.o: $(BUILD_DIR)/userspace/jpeg.o $(BUILD_DIR)/userspace/jpeg_core.o $(BUILD_DIR)/userspace/jpeg_progressive.o
+	@mkdir -p $(dir $@)
+	$(CROSS)ld -m elf_i386 -r -o $@ $^
+
+$(JPEG_TSO): $(BUILD_DIR)/userspace/jpeg_merged.o
 	@mkdir -p $(dir $@)
 	cp -f $< $@
 
@@ -128,42 +132,42 @@ $(UI_FONT_FILE): FORCE $(UI_FONT)
 	cp -f $(UI_FONT) $@
 endif
 
-$(APP_TSK_ELF): $(BUILD_DIR)/apps/app.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(APP_TSK_ELF): $(BUILD_DIR)/apps/app.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(APP_TSK_ADDR) -o $@ $^
 
 $(APP_TSK): $(APP_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(TERMINAL_TSK_ELF): $(BUILD_DIR)/apps/terminal_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(TERMINAL_TSK_ELF): $(BUILD_DIR)/apps/terminal_tsk.o $(BUILD_DIR)/apps/terminal_cmd.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(TERMINAL_TSK_ADDR) -o $@ $^
 
 $(TERMINAL_TSK): $(TERMINAL_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(WM_TSK_ELF): $(BUILD_DIR)/apps/wm_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(WM_TSK_ELF): $(BUILD_DIR)/apps/wm_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(WM_TSK_ADDR) -o $@ $^
 
 $(WM_TSK): $(WM_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(START_TSK_ELF): $(BUILD_DIR)/apps/start_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(START_TSK_ELF): $(BUILD_DIR)/apps/start_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(START_TSK_ADDR) -o $@ $^
 
 $(START_TSK): $(START_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(IMAGE_TSK_ELF): $(BUILD_DIR)/boot/image_entry.o $(BUILD_DIR)/apps/image_tsk.o $(BUILD_DIR)/userspace/jpeg.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(IMAGE_TSK_ELF): $(BUILD_DIR)/boot/image_entry.o $(BUILD_DIR)/apps/image_tsk.o $(BUILD_DIR)/userspace/jpeg.o $(BUILD_DIR)/userspace/jpeg_core.o $(BUILD_DIR)/userspace/jpeg_progressive.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(IMAGE_TSK_ADDR) -o $@ $^
 
 $(IMAGE_TSK): $(IMAGE_TSK_ELF) $(MAKE_TSK)
 	$(MAKE_TSK) $< $@
 
-$(SETTINGS_TSK_ELF): $(BUILD_DIR)/boot/settings_entry.o $(BUILD_DIR)/apps/settings_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o
+$(SETTINGS_TSK_ELF): $(BUILD_DIR)/boot/settings_entry.o $(BUILD_DIR)/apps/settings_tsk.o $(BUILD_DIR)/userspace/lib.o $(BUILD_DIR)/userspace/ui.o $(BUILD_DIR)/userspace/string.o
 	@mkdir -p $(dir $@)
 	$(CROSS)ld -m elf_i386 -N -e _start -Ttext $(SETTINGS_TSK_ADDR) -o $@ $^
 
