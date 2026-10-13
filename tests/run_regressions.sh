@@ -26,6 +26,7 @@ mkdir -p "$TMP"
     $UBSAN_FLAGS \
     -I"$ROOT/include" \
     "$ROOT/tests/jpeg_regression.c" "$ROOT/userspace/jpeg.c" \
+    "$ROOT/userspace/jpeg_core.c" "$ROOT/userspace/jpeg_progressive.c" \
     -o "$TMP/jpeg_regression"
 
 # Host tests execute the real filesystem implementation, replacing only the

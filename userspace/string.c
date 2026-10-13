@@ -5,14 +5,14 @@
 
 #include "string.h"
 
-void* memcpy(void* dst, const void* src, unsigned int n) {
+void* memcpy(void* dst, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dst;
     const unsigned char* s = (const unsigned char*)src;
     while (n--) *d++ = *s++;
     return dst;
 }
 
-void* memmove(void* dst, const void* src, unsigned int n) {
+void* memmove(void* dst, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dst;
     const unsigned char* s = (const unsigned char*)src;
 
@@ -25,14 +25,14 @@ void* memmove(void* dst, const void* src, unsigned int n) {
     return dst;
 }
 
-void* memset(void* dst, int value, unsigned int n) {
+void* memset(void* dst, int value, size_t n) {
     unsigned char* d = (unsigned char*)dst;
     unsigned char v = (unsigned char)value;
     while (n--) *d++ = v;
     return dst;
 }
 
-int memcmp(const void* a, const void* b, unsigned int n) {
+int memcmp(const void* a, const void* b, size_t n) {
     const unsigned char* x = (const unsigned char*)a;
     const unsigned char* y = (const unsigned char*)b;
     while (n--) {
@@ -43,7 +43,7 @@ int memcmp(const void* a, const void* b, unsigned int n) {
     return 0;
 }
 
-unsigned int strlen(const char* s) {
+size_t strlen(const char* s) {
     unsigned int n = 0;
     while (s && s[n]) n++;
     return n;
@@ -58,7 +58,7 @@ int strcmp(const char* a, const char* b) {
     return (int)((unsigned char)a[i]) - (int)((unsigned char)b[i]);
 }
 
-int strncmp(const char* a, const char* b, unsigned int n) {
+int strncmp(const char* a, const char* b, size_t n) {
     unsigned int i;
     for (i = 0; i < n; i++) {
         unsigned char ac = (unsigned char)a[i];
@@ -75,7 +75,7 @@ char* strcpy(char* dst, const char* src) {
     return dst;
 }
 
-char* strncpy(char* dst, const char* src, unsigned int n) {
+char* strncpy(char* dst, const char* src, size_t n) {
     unsigned int i = 0;
     while (i < n && src[i]) {
         dst[i] = src[i];
@@ -92,7 +92,7 @@ char* strcat(char* dst, const char* src) {
     return dst;
 }
 
-char* strncat(char* dst, const char* src, unsigned int n) {
+char* strncat(char* dst, const char* src, size_t n) {
     char* d = dst;
     unsigned int i = 0;
     while (*d) d++;
@@ -122,9 +122,9 @@ char* strrchr(const char* s, int c) {
     return (char*)last;
 }
 
-unsigned int strlcpy(char* dst, const char* src, unsigned int max) {
-    unsigned int slen = strlen(src);
-    unsigned int i = 0;
+size_t strlcpy(char* dst, const char* src, size_t max) {
+    size_t slen = strlen(src);
+    size_t i = 0;
 
     if (max == 0) return slen;
     while (i + 1 < max && src[i]) {
@@ -135,11 +135,11 @@ unsigned int strlcpy(char* dst, const char* src, unsigned int max) {
     return slen;
 }
 
-unsigned int strlcat(char* dst, const char* src, unsigned int max) {
-    unsigned int dlen = strlen(dst);
-    unsigned int slen = strlen(src);
-    unsigned int room;
-    unsigned int i = 0;
+size_t strlcat(char* dst, const char* src, size_t max) {
+    size_t dlen = strlen(dst);
+    size_t slen = strlen(src);
+    size_t room;
+    size_t i = 0;
 
     if (dlen >= max) return slen + max;
     room = max - dlen - 1;
@@ -149,6 +149,19 @@ unsigned int strlcat(char* dst, const char* src, unsigned int max) {
     }
     dst[dlen + i] = '\0';
     return dlen + slen;
+}
+
+char* strstr(const char* haystack, const char* needle) {
+    unsigned int n = 0;
+
+    if (!haystack || !needle) return (char*)haystack;
+    if (needle[0] == '\0') return (char*)haystack;
+    for (n = 0; haystack[n]; n++) {
+        unsigned int j = 0;
+        while (needle[j] && haystack[n + j] == needle[j]) j++;
+        if (needle[j] == '\0') return (char*)(haystack + n);
+    }
+    return 0;
 }
 
 int str_ends_with(const char* s, const char* suffix) {
